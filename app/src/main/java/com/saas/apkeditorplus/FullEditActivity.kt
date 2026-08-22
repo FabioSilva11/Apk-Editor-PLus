@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
@@ -19,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.viewpager2.adapter.FragmentStateAdapter
 import androidx.viewpager2.widget.ViewPager2
 import com.saas.apkeditorplus.full.FilesFragment
+import com.saas.apkeditorplus.full.DiffFragment
 import com.saas.apkeditorplus.full.ManifestFragment
 import com.saas.apkeditorplus.full.StringFragment
 import com.saas.apkeditorplus.ui.full.FullEditScreen
@@ -43,6 +45,14 @@ class FullEditActivity : BaseActivity() {
     private var hasChanges by mutableStateOf(false)
     private var patchBusy by mutableStateOf(false)
     private var serverRunning by mutableStateOf(false)
+    var changesRevision by mutableIntStateOf(0)
+        private set
+
+    data class PendingChange(
+        val entryName: String,
+        val modifiedFile: File?,
+        val deleted: Boolean
+    )
 
     private val patchLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@registerForActivityResult
@@ -141,6 +151,14 @@ class FullEditActivity : BaseActivity() {
     fun resolveModifiedEntry(entryName: String): File? = modifiedFiles[entryName]
         ?.takeIf(String::isNotBlank)?.let(::File)?.takeIf(File::exists)
     fun isEntryModified(entryName: String): Boolean = modifiedFiles.containsKey(entryName)
+    fun pendingChangesSnapshot(): List<PendingChange> =
+        (modifiedFiles.keys + deletedEntries).distinct().sorted().map { entryName ->
+            PendingChange(
+                entryName = entryName,
+                modifiedFile = modifiedFiles[entryName]?.let(::File)?.takeIf(File::exists),
+                deleted = deletedEntries.contains(entryName)
+            )
+        }
 
     private fun setupViewPager(pager: ViewPager2) {
         if (::viewPager.isInitialized && viewPager === pager) return
@@ -156,6 +174,7 @@ class FullEditActivity : BaseActivity() {
 
     private fun changesUpdated() {
         hasChanges = hasPendingChanges()
+        changesRevision++
         if (apkPath.isBlank()) return
         runCatching {
             if (hasChanges) projectStore.save(apkPath, modifiedFiles, deletedEntries)
@@ -260,11 +279,12 @@ class FullEditActivity : BaseActivity() {
     private fun hasPendingChanges(): Boolean = modifiedFiles.isNotEmpty() || deletedEntries.isNotEmpty()
 
     private inner class FullEditPagerAdapter : FragmentStateAdapter(this@FullEditActivity) {
-        override fun getItemCount(): Int = 3
+        override fun getItemCount(): Int = 4
         override fun createFragment(position: Int): Fragment = when (position) {
             0 -> StringFragment.newInstance(apkPath)
             1 -> FilesFragment.newInstance(apkPath)
             2 -> ManifestFragment.newInstance(apkPath)
+            3 -> DiffFragment.newInstance(apkPath)
             else -> StringFragment.newInstance(apkPath)
         }
     }

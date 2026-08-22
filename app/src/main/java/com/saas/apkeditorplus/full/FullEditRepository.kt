@@ -35,7 +35,8 @@ object FullEditRepository {
         val name: String,
         val value: String?,
         val valueIndex: Int? = null,
-        val localeQualifier: String = ""
+        val localeQualifier: String = "",
+        val needsTranslation: Boolean = false
     )
 
     data class SmaliWorkspace(

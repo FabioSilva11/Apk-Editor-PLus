@@ -28,6 +28,7 @@ internal object FullEditWorkspaceManager {
     private const val WORKSPACE_MARKER = ".decoded"
     private const val STRINGS_FILE = "strings.xml"
     private const val LEGACY_OVERRIDE_STRINGS_FILE = "zz_strings_full_edit.xml"
+    private const val PENDING_TRANSLATIONS_DIR = ".pending_translations"
     private val hiddenStringPrefixes = listOf(
         "abc_",
         "androidx_",
@@ -118,7 +119,7 @@ internal object FullEditWorkspaceManager {
         val resDir = getWorkspace(context, apkPath).resDir
         return ApkUtil.listValuesDirectory(resDir)
             .mapNotNull { valuesDir ->
-                if (containsStringResource(valuesDir)) {
+                if (containsDisplayableStringResource(valuesDir)) {
                     qualifierFromValuesDirectory(valuesDir.name)
                 } else {
                     null
@@ -136,6 +137,8 @@ internal object FullEditWorkspaceManager {
         localeQualifier: String
     ): List<FullEditRepository.StringResourceItem> {
         val valuesDir = valuesDirectoryForQualifier(getWorkspace(context, apkPath).resDir, localeQualifier)
+        val workspace = getWorkspace(context, apkPath)
+        val pendingTranslations = readPendingTranslations(workspace, localeQualifier)
         val merged = linkedMapOf<String, String>()
         stringXmlFiles(valuesDir).forEach { file ->
             readStringValues(file).forEach { value ->
@@ -148,7 +151,8 @@ internal object FullEditWorkspaceManager {
                 FullEditRepository.StringResourceItem(
                     name = name,
                     value = value,
-                    localeQualifier = localeQualifier
+                    localeQualifier = localeQualifier,
+                    needsTranslation = name in pendingTranslations
                 )
             }
             .sortedBy { it.name.lowercase(Locale.ROOT) }
@@ -177,7 +181,11 @@ internal object FullEditWorkspaceManager {
     ): File {
         val workspace = getWorkspace(context, apkPath)
         val valuesDir = valuesDirectoryForQualifier(workspace.resDir, localeQualifier)
+        val previousValue = readStringResources(context, apkPath, localeQualifier)
+            .firstOrNull { it.name == name }
+            ?.value
         require(updateStringValue(valuesDir, name, newValue)) { "String not found: $name" }
+        if (previousValue != newValue) markTranslationsCompleted(workspace, localeQualifier, setOf(name))
         return compileResources(context, apkPath, workspace)
     }
 
@@ -195,12 +203,15 @@ internal object FullEditWorkspaceManager {
         val currentValues = readStringResources(context, apkPath, localeQualifier)
             .associate { it.name to it.value.orEmpty() }
         var changed = 0
+        val changedNames = linkedSetOf<String>()
         parsedValues.forEach { (name, value) ->
             if (currentValues[name] != value && updateStringValue(valuesDir, name, value)) {
                 changed++
+                changedNames += name
             }
         }
         require(changed > 0) { "No changed strings found" }
+        markTranslationsCompleted(workspace, localeQualifier, changedNames)
         return compileResources(context, apkPath, workspace)
     }
 
@@ -233,10 +244,12 @@ internal object FullEditWorkspaceManager {
         }
 
         var addedCount = 0
+        val addedNames = linkedSetOf<String>()
         defaultValues.forEach { item ->
             if (existingNames.add(item.name)) {
                 mergedValues[item.name] = item.value.orEmpty()
                 addedCount += 1
+                addedNames += item.name
             }
         }
 
@@ -247,6 +260,7 @@ internal object FullEditWorkspaceManager {
         val workspace = getWorkspace(context, apkPath)
         val valuesDir = valuesDirectoryForQualifier(workspace.resDir, localeQualifier).apply { mkdirs() }
         writeStringsXml(File(valuesDir, STRINGS_FILE), mergedValues)
+        addPendingTranslations(workspace, localeQualifier, addedNames)
         return compileResources(context, apkPath, workspace)
     }
 
@@ -328,8 +342,44 @@ internal object FullEditWorkspaceManager {
             .orEmpty()
     }
 
-    private fun containsStringResource(valuesDir: File): Boolean {
-        return stringXmlFiles(valuesDir).any { file -> readStringValues(file).isNotEmpty() }
+    private fun containsDisplayableStringResource(valuesDir: File): Boolean {
+        return stringXmlFiles(valuesDir).any { file ->
+            readStringValues(file).any { value -> isDisplayableString(value.name) }
+        }
+    }
+
+    private fun pendingTranslationsFile(workspace: WorkspaceInfo, localeQualifier: String): File =
+        File(
+            File(File(workspace.rootDir.parentFile, PENDING_TRANSLATIONS_DIR), workspace.key),
+            "${safeLocaleSuffix(localeQualifier)}.txt"
+        )
+
+    private fun readPendingTranslations(workspace: WorkspaceInfo, localeQualifier: String): Set<String> =
+        pendingTranslationsFile(workspace, localeQualifier)
+            .takeIf(File::isFile)
+            ?.readLines(Charsets.UTF_8)
+            ?.filter(String::isNotBlank)
+            ?.toSet()
+            .orEmpty()
+
+    private fun addPendingTranslations(workspace: WorkspaceInfo, localeQualifier: String, names: Collection<String>) {
+        if (names.isEmpty()) return
+        writePendingTranslations(workspace, localeQualifier, readPendingTranslations(workspace, localeQualifier) + names)
+    }
+
+    private fun markTranslationsCompleted(workspace: WorkspaceInfo, localeQualifier: String, names: Set<String>) {
+        if (names.isEmpty()) return
+        writePendingTranslations(workspace, localeQualifier, readPendingTranslations(workspace, localeQualifier) - names)
+    }
+
+    private fun writePendingTranslations(workspace: WorkspaceInfo, localeQualifier: String, names: Set<String>) {
+        val marker = pendingTranslationsFile(workspace, localeQualifier)
+        if (names.isEmpty()) {
+            marker.delete()
+            return
+        }
+        marker.parentFile?.mkdirs()
+        marker.writeText(names.sorted().joinToString(separator = "\n", postfix = "\n"), Charsets.UTF_8)
     }
 
     private fun readStringValues(file: File): List<StringValue> {

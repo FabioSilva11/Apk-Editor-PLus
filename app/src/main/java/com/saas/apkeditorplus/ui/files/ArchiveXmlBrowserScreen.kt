@@ -3,6 +3,7 @@ package com.saas.apkeditorplus.ui.files
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,6 +19,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,7 +37,8 @@ fun ArchiveXmlBrowserScreen(
     modifiedNames: Set<String>,
     onBack: () -> Unit,
     onItemClick: (ArchiveBrowserItem) -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    thumbnailLoader: (ArchiveBrowserItem) -> ImageBitmap?
 ) {
     Scaffold(
         topBar = {
@@ -46,7 +49,7 @@ fun ArchiveXmlBrowserScreen(
         },
         bottomBar = {
             if (modifiedNames.isNotEmpty()) {
-                Button(onClick = onSave, Modifier.fillMaxWidth().padding(12.dp)) {
+                Button(onClick = onSave, Modifier.fillMaxWidth().navigationBarsPadding().padding(12.dp)) {
                     Text("Reconstruir com ${modifiedNames.size} alteração(ões)")
                 }
             }
@@ -56,10 +59,15 @@ fun ArchiveXmlBrowserScreen(
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             LazyColumn(Modifier.fillMaxSize()) {
                 items(items, key = { it.fullPath + it.name }) { item ->
+                    val kind = classifyFile(item.name, item.directory, item.name == "..")
                     UnifiedFileRow(
                         name = item.name,
                         detail = if (item.directory) "Pasta" else item.fullPath,
-                        kind = classifyFile(item.name, item.directory, item.name == ".."),
+                        kind = kind,
+                        thumbnailKey = item.fullPath.takeIf { kind == FileVisualKind.IMAGE },
+                        thumbnailLoader = if (kind == FileVisualKind.IMAGE) {
+                            { thumbnailLoader(item) }
+                        } else null,
                         modified = item.fullPath in modifiedNames,
                         onClick = { onItemClick(item) }
                     )

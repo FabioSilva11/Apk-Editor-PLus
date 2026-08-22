@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.dp
 import com.saas.apkeditorplus.R
 import com.saas.apkeditorplus.ui.files.UnifiedFileRow
 import com.saas.apkeditorplus.ui.files.classifyFile
+import com.saas.apkeditorplus.ui.files.decodeImageThumbnail
+import com.saas.apkeditorplus.ui.files.FileVisualKind
 import java.io.File
 import java.util.Locale
 
@@ -49,10 +51,15 @@ fun SignFileScreen(
     ) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding)) {
             items(files, key = { it.absolutePath }) { file ->
+                val kind = classifyFile(file, file.name == "..")
                 UnifiedFileRow(
                     name = file.name,
                     detail = if (file.isDirectory || file.name == "..") "Pasta" else formatSize(file.length()),
-                    kind = classifyFile(file, file.name == ".."),
+                    kind = kind,
+                    thumbnailKey = file.absolutePath.takeIf { kind == FileVisualKind.IMAGE },
+                    thumbnailLoader = if (kind == FileVisualKind.IMAGE) {
+                        { decodeImageThumbnail(file) }
+                    } else null,
                     onClick = { onFileClick(file) }
                 )
                 HorizontalDivider(Modifier.padding(start = 68.dp), color = MaterialTheme.colorScheme.outlineVariant)

@@ -74,11 +74,16 @@ fun FileBrowserScreen(
             )
             LazyColumn(Modifier.fillMaxSize()) {
                 items(items, key = { (if (it.parent) "parent:" else "file:") + it.file.absolutePath }) { item ->
+                    val kind = classifyFile(item.file, item.parent)
                     UnifiedFileRow(
                         name = if (item.parent) ".." else item.file.name,
                         detail = if (item.parent) "Pasta anterior" else item.detail,
-                        kind = classifyFile(item.file, item.parent),
+                        kind = kind,
                         thumbnail = item.icon,
+                        thumbnailKey = item.file.absolutePath.takeIf { kind == FileVisualKind.IMAGE },
+                        thumbnailLoader = if (kind == FileVisualKind.IMAGE) {
+                            { decodeImageThumbnail(item.file) }
+                        } else null,
                         onClick = { onItemClick(item) }
                     )
                     HorizontalDivider(Modifier.padding(start = 68.dp), color = MaterialTheme.colorScheme.outlineVariant)

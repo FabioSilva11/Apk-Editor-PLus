@@ -3,6 +3,12 @@ package com.saas.apkeditorplus.full
 import java.util.Locale
 
 internal object FullEditLanguageCatalog {
+    data class LanguageEntry(
+        val qualifier: String,
+        val label: String,
+        val symbol: String
+    )
+
     private val codes = arrayOf(
         "-af", "-sq", "-ar", "-hy", "-az", "-eu", "-be", "-bn", "-bs", "-bg",
         "-ca", "-ny", "-zh-rCN", "-zh-rTW", "-hr", "-cs", "-da", "-nl", "-en", "-eo",
@@ -58,4 +64,31 @@ internal object FullEditLanguageCatalog {
             "($qualifier)"
         }
     }
+
+    fun entryForQualifier(qualifier: String): LanguageEntry = LanguageEntry(
+        qualifier = qualifier,
+        label = labelForQualifier(qualifier),
+        symbol = symbolForQualifier(qualifier)
+    )
+
+    fun missingLanguages(existingQualifiers: Collection<String>): List<LanguageEntry> {
+        val existing = existingQualifiers.mapTo(hashSetOf()) { normalizeQualifier(it) }
+        return codes.asSequence()
+            .filterNot { normalizeQualifier(it) in existing }
+            .map(::entryForQualifier)
+            .sortedBy { it.label.lowercase(Locale.getDefault()) }
+            .toList()
+    }
+
+    private fun symbolForQualifier(qualifier: String): String {
+        if (qualifier.isBlank()) return "📱"
+        val region = Regex("-r([A-Za-z]{2})").find(qualifier)?.groupValues?.get(1)
+            ?.uppercase(Locale.ROOT)
+            ?: return "🌐"
+        return region.map { character ->
+            Character.toChars(0x1F1E6 + (character.code - 'A'.code)).concatToString()
+        }.joinToString("")
+    }
+
+    private fun normalizeQualifier(qualifier: String): String = qualifier.lowercase(Locale.ROOT)
 }

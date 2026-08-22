@@ -18,6 +18,8 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Difference
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,6 +92,12 @@ fun FullEditScreen(
                         label = { Text(label) }
                     )
                 }
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { onTabSelected(3) },
+                    icon = { Icon(Icons.Rounded.Difference, null) },
+                    label = { Text("Diferenças") }
+                )
             }
         }
     ) { padding ->

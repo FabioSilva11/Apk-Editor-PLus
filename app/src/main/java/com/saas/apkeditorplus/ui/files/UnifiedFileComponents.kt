@@ -1,10 +1,12 @@
 package com.saas.apkeditorplus.ui.files
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -32,16 +34,23 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.io.File
+import java.io.InputStream
+import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 enum class FileVisualKind {
     PARENT, FOLDER, APK, XML, TEXT, IMAGE, AUDIO, DEX, SMALI, ARCHIVE, OTHER
@@ -72,6 +81,8 @@ fun UnifiedFileRow(
     detail: String,
     kind: FileVisualKind,
     thumbnail: ImageBitmap? = null,
+    thumbnailKey: String? = null,
+    thumbnailLoader: (() -> ImageBitmap?)? = null,
     modified: Boolean = false,
     onReplace: (() -> Unit)? = null,
     onExport: (() -> Unit)? = null,
@@ -79,6 +90,17 @@ fun UnifiedFileRow(
     onClick: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val visibleThumbnail by produceState(
+        initialValue = thumbnail,
+        key1 = thumbnail,
+        key2 = thumbnailKey
+    ) {
+        value = thumbnail ?: if (thumbnailKey != null && thumbnailLoader != null) {
+            withContext(Dispatchers.IO) { runCatching(thumbnailLoader).getOrNull() }
+        } else {
+            null
+        }
+    }
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -89,8 +111,13 @@ fun UnifiedFileRow(
             color = iconContainerColor(kind)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                if (thumbnail != null) {
-                    Image(thumbnail, null, Modifier.size(32.dp))
+                if (visibleThumbnail != null) {
+                    Image(
+                        bitmap = visibleThumbnail!!,
+                        contentDescription = "Miniatura de $name",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                 } else {
                     Icon(
                         imageVector = iconFor(kind),
@@ -149,6 +176,64 @@ fun UnifiedFileRow(
             }
         }
     }
+}
+
+/** Decodes a small preview without keeping the source image at its original resolution in RAM. */
+fun decodeImageThumbnail(
+    openStream: () -> InputStream?,
+    maxDimensionPx: Int = 192
+): ImageBitmap? {
+    val encoded = openStream()?.use(::readThumbnailBytes) ?: return null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(encoded, 0, encoded.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (bounds.outWidth / sampleSize > maxDimensionPx * 2 ||
+        bounds.outHeight / sampleSize > maxDimensionPx * 2
+    ) {
+        sampleSize *= 2
+    }
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+    }
+    return BitmapFactory.decodeByteArray(encoded, 0, encoded.size, options)?.asImageBitmap()
+}
+
+private fun readThumbnailBytes(input: InputStream): ByteArray? {
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        if (total > MAX_THUMBNAIL_SOURCE_BYTES) return null
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}
+
+private const val MAX_THUMBNAIL_SOURCE_BYTES = 16 * 1024 * 1024
+
+fun decodeImageThumbnail(file: File, maxDimensionPx: Int = 192): ImageBitmap? {
+    if (!file.isFile) return null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    var sampleSize = 1
+    while (bounds.outWidth / sampleSize > maxDimensionPx * 2 ||
+        bounds.outHeight / sampleSize > maxDimensionPx * 2
+    ) {
+        sampleSize *= 2
+    }
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+    }
+    return BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
 }
 
 private fun iconFor(kind: FileVisualKind): ImageVector = when (kind) {

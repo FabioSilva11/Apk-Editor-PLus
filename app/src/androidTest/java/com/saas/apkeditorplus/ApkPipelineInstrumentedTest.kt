@@ -10,20 +10,23 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.FixMethodOrder
 import org.junit.Test
+import org.junit.runners.MethodSorters
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class ApkPipelineInstrumentedTest {
     @Test
-    fun composeFileBrowserStartsWithoutCrash() {
+    fun b_composeFileBrowserStartsWithoutCrash() {
         ActivityScenario.launch(FileListActivity::class.java).use { scenario ->
             scenario.onActivity { activity -> assertTrue(!activity.isFinishing) }
         }
     }
 
     @Test
-    fun composeFullEditorHostsAllFragments() {
+    fun c_composeFullEditorHostsAllFragments() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val intent = Intent(context, FullEditActivity::class.java)
             .putExtra("apkPath", context.applicationInfo.sourceDir)
@@ -33,7 +36,7 @@ class ApkPipelineInstrumentedTest {
     }
 
     @Test
-    fun composeFileManagersAndTextEditorStartWithoutCrash() {
+    fun d_composeFileManagersAndTextEditorStartWithoutCrash() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val apkPath = context.applicationInfo.sourceDir
         AppSettings.prefs(context).edit().putBoolean(AppSettings.EXTERNAL_EDITOR, false).commit()
@@ -65,7 +68,7 @@ class ApkPipelineInstrumentedTest {
     }
 
     @Test
-    fun commonEditRebuildAndSignProducesValidApk() {
+    fun a_commonEditRebuildAndSignProducesValidApk() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val source = File(context.applicationInfo.sourceDir)
         val original = CommonEditEngine.read(source)

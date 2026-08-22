@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
@@ -48,6 +49,7 @@ import com.saas.apkeditorplus.TextEditBigActivity
 import com.saas.apkeditorplus.ui.files.FileVisualKind
 import com.saas.apkeditorplus.ui.files.UnifiedFileRow
 import com.saas.apkeditorplus.ui.files.classifyFile
+import com.saas.apkeditorplus.ui.files.decodeImageThumbnail
 import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
 import java.util.zip.ZipFile
@@ -201,17 +203,22 @@ class FilesFragment : Fragment() {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(visibleItems, key = { it.entryName + it.kind.name }) { item ->
                     val actionVisible = item.kind != ItemKind.BACK && !item.isDirectory
+                    val visualKind = when (item.kind) {
+                        ItemKind.BACK -> FileVisualKind.PARENT
+                        ItemKind.FOLDER -> FileVisualKind.FOLDER
+                        ItemKind.MANIFEST, ItemKind.XML -> FileVisualKind.XML
+                        ItemKind.DEX -> FileVisualKind.DEX
+                        ItemKind.TEXT -> classifyFile(item.displayName)
+                        ItemKind.BINARY -> classifyFile(item.displayName)
+                    }
                     UnifiedFileRow(
                         name = item.displayName,
                         detail = item.detail,
-                        kind = when (item.kind) {
-                            ItemKind.BACK -> FileVisualKind.PARENT
-                            ItemKind.FOLDER -> FileVisualKind.FOLDER
-                            ItemKind.MANIFEST, ItemKind.XML -> FileVisualKind.XML
-                            ItemKind.DEX -> FileVisualKind.DEX
-                            ItemKind.TEXT -> classifyFile(item.displayName)
-                            ItemKind.BINARY -> classifyFile(item.displayName)
-                        },
+                        kind = visualKind,
+                        thumbnailKey = item.entryName.takeIf { visualKind == FileVisualKind.IMAGE },
+                        thumbnailLoader = if (visualKind == FileVisualKind.IMAGE) {
+                            { loadArchiveThumbnail(item) }
+                        } else null,
                         modified = item.modified,
                         onReplace = if (actionVisible) ({ replaceArchiveItem(item) }) else null,
                         onExport = if (actionVisible) ({ exportItem(item) }) else null,
@@ -227,6 +234,16 @@ class FilesFragment : Fragment() {
     private fun host(): FullEditActivity = requireActivity() as FullEditActivity
 
     private fun apkPath(): String = arguments?.getString(ARG_APK_PATH).orEmpty()
+
+    private fun loadArchiveThumbnail(item: BrowserItem): ImageBitmap? {
+        host().resolveModifiedEntry(item.entryName)?.takeIf(File::isFile)?.let { replacement ->
+            return decodeImageThumbnail(replacement)
+        }
+        return ZipFile(apkPath()).use { zip ->
+            val zipEntry = zip.getEntry(item.entryName) ?: return@use null
+            decodeImageThumbnail(openStream = { zip.getInputStream(zipEntry) })
+        }
+    }
 
     private fun loadFiles() {
         val context = requireContext().applicationContext

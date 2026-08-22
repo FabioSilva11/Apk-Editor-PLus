@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import com.apk.axml.ResourceTableParser
 import com.saas.apkeditorplus.ui.files.ArchiveBrowserItem
 import com.saas.apkeditorplus.ui.files.ArchiveXmlBrowserScreen
+import com.saas.apkeditorplus.ui.files.decodeImageThumbnail
 import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import com.saas.apkeditorplus.utils.AxmlDecoder
 import java.io.File
@@ -56,7 +57,8 @@ class AxmlEditActivity : BaseActivity() {
                     modifiedNames = modifiedNames,
                     onBack = ::navigateBack,
                     onItemClick = ::openItem,
-                    onSave = ::startApkCreate
+                    onSave = ::startApkCreate,
+                    thumbnailLoader = ::loadThumbnail
                 )
             }
         }
@@ -71,6 +73,11 @@ class AxmlEditActivity : BaseActivity() {
         appInfo.publicSourceDir = apkPath
         appInfo.loadLabel(packageManager).toString()
     }.getOrDefault("Editor XML")
+
+    private fun loadThumbnail(item: ArchiveBrowserItem) = ZipFile(apkPath).use { zip ->
+        val entry = zip.getEntry(item.fullPath) ?: return@use null
+        decodeImageThumbnail(openStream = { zip.getInputStream(entry) })
+    }
 
     private fun loadResources() {
         Thread {

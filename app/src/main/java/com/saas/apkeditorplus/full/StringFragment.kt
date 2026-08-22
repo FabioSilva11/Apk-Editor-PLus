@@ -7,21 +7,19 @@ import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AlertDialog as AppCompatAlertDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -29,6 +27,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -39,6 +38,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,7 +64,8 @@ class StringFragment : Fragment() {
 
     private data class LanguageOption(
         val qualifier: String,
-        val label: String
+        val label: String,
+        val symbol: String
     )
 
     private var languageOptions by mutableStateOf<List<LanguageOption>>(emptyList())
@@ -117,23 +118,30 @@ class StringFragment : Fragment() {
     @Composable
     private fun StringsContent() {
         var languageMenu by remember { mutableStateOf(false) }
+        var addLanguageDialog by remember { mutableStateOf(false) }
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-                IconButton(onClick = ::showAddLanguageDialog) { Icon(Icons.Rounded.Add, "Adicionar idioma") }
+                IconButton(onClick = { addLanguageDialog = true }) { Icon(Icons.Rounded.Add, "Adicionar idioma") }
                 androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
                     androidx.compose.material3.TextButton(onClick = { languageMenu = true }, Modifier.fillMaxWidth()) {
-                        Text(languageOptions.firstOrNull { it.qualifier == selectedQualifier }?.label ?: "Idioma padrão", Modifier.weight(1f), maxLines = 1)
+                        val selected = languageOptions.firstOrNull { it.qualifier == selectedQualifier }
+                        Text(selected?.symbol.orEmpty(), Modifier.padding(end = 8.dp))
+                        Text(selected?.label ?: "Idioma padrão", Modifier.weight(1f), maxLines = 1)
                         Icon(Icons.Rounded.ArrowDropDown, null)
                     }
                     DropdownMenu(languageMenu, { languageMenu = false }) {
                         languageOptions.forEach { option ->
-                            DropdownMenuItem(text = { Text(option.label) }, onClick = {
-                                languageMenu = false
-                                if (selectedQualifier != option.qualifier) {
-                                    selectedQualifier = option.qualifier
-                                    loadStrings()
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                leadingIcon = { Text(option.symbol) },
+                                onClick = {
+                                    languageMenu = false
+                                    if (selectedQualifier != option.qualifier) {
+                                        selectedQualifier = option.qualifier
+                                        loadStrings()
+                                    }
                                 }
-                            })
+                            )
                         }
                     }
                 }
@@ -151,15 +159,93 @@ class StringFragment : Fragment() {
             if (!loading && visibleItems.isEmpty()) Text(emptyMessage, Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
             LazyColumn(Modifier.fillMaxSize()) {
                 items(visibleItems, key = { it.name }) { item ->
+                    val itemColor = if (item.needsTranslation) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
                     ListItem(
-                        headlineContent = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(item.value.orEmpty(), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                        headlineContent = { Text(item.name, color = itemColor, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = {
+                            Column {
+                                Text(item.value.orEmpty(), color = itemColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                if (item.needsTranslation) {
+                                    Text(
+                                        "Precisa de tradução",
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth().clickable { showEditValueDialog(item) }
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
+
+        if (addLanguageDialog) {
+            AddLanguageDialog(
+                existingQualifiers = languageOptions.map(LanguageOption::qualifier),
+                onDismiss = { addLanguageDialog = false },
+                onAdd = { qualifier ->
+                    addLanguageDialog = false
+                    createLanguage(qualifier)
+                }
+            )
+        }
+    }
+
+    @Composable
+    private fun AddLanguageDialog(
+        existingQualifiers: List<String>,
+        onDismiss: () -> Unit,
+        onAdd: (String) -> Unit
+    ) {
+        var search by remember { mutableStateOf("") }
+        val available = FullEditLanguageCatalog.missingLanguages(existingQualifiers)
+            .filter { option ->
+                search.isBlank() || option.label.contains(search, ignoreCase = true) ||
+                    option.qualifier.contains(search, ignoreCase = true)
+            }
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Adicionar idioma") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = search,
+                        onValueChange = { search = it },
+                        placeholder = { Text("Pesquisar idioma") },
+                        trailingIcon = { Icon(Icons.Rounded.Search, null) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                    )
+                    if (available.isEmpty()) {
+                        Text(
+                            if (search.isBlank()) "Todos os idiomas disponíveis já foram adicionados."
+                            else "Nenhum idioma encontrado.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
+                    } else {
+                        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                            items(available, key = { it.qualifier }) { option ->
+                                ListItem(
+                                    headlineContent = { Text(option.label) },
+                                    supportingContent = { Text(option.qualifier) },
+                                    leadingContent = { Text(option.symbol, Modifier.width(32.dp)) },
+                                    modifier = Modifier.fillMaxWidth().clickable { onAdd(option.qualifier) }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
+        )
     }
 
     private fun host(): FullEditActivity = requireActivity() as FullEditActivity
@@ -186,9 +272,11 @@ class StringFragment : Fragment() {
             languageOptions = qualifiers
                 .ifEmpty { listOf("") }
                 .map { qualifier ->
+                    val catalogEntry = FullEditLanguageCatalog.entryForQualifier(qualifier)
                     LanguageOption(
                         qualifier = qualifier,
-                        label = FullEditLanguageCatalog.labelForQualifier(qualifier)
+                        label = catalogEntry.label,
+                        symbol = catalogEntry.symbol
                     )
                 }
 
@@ -256,7 +344,7 @@ class StringFragment : Fragment() {
             InputType.TYPE_TEXT_FLAG_MULTI_LINE or
             InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
 
-        AlertDialog.Builder(context)
+        AppCompatAlertDialog.Builder(context)
             .setTitle(R.string.edit_string_value)
             .setView(dialogView)
             .setPositiveButton(R.string.save) { _, _ ->
@@ -314,72 +402,6 @@ class StringFragment : Fragment() {
             ).show()
             loadLanguages(selectedQualifier)
         }
-    }
-
-    private fun showAddLanguageDialog() {
-        val context = requireContext()
-        val container = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(24, 12, 24, 4)
-        }
-        val spinner = Spinner(context)
-        val codeInput = EditText(context).apply {
-            inputType = InputType.TYPE_CLASS_TEXT
-            setText(FullEditLanguageCatalog.codeAt(FullEditLanguageCatalog.indexOfBestMatch(selectedQualifier)))
-            hint = "-pt-rBR"
-        }
-        val codeLabel = TextView(context).apply {
-            text = "Qualifier"
-            setPadding(0, 20, 0, 8)
-        }
-        val dialogAdapter = ArrayAdapter(
-            context,
-            android.R.layout.simple_spinner_item,
-            FullEditLanguageCatalog.languageNames()
-        ).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-        spinner.adapter = dialogAdapter
-        spinner.setSelection(FullEditLanguageCatalog.indexOfBestMatch(selectedQualifier), false)
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                codeInput.setText(FullEditLanguageCatalog.codeAt(position))
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
-        container.addView(spinner)
-        container.addView(codeLabel)
-        container.addView(
-            codeInput,
-            ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        val dialog = AlertDialog.Builder(context)
-            .setTitle(R.string.add_a_language)
-            .setView(container)
-            .setNegativeButton(R.string.colormixer_cancel, null)
-            .setPositiveButton(R.string.add, null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val qualifier = codeInput.text?.toString().orEmpty().trim()
-                if (!qualifier.matches(Regex("^-([A-Za-z]{2,3})(-r[A-Za-z]{2})?$"))) {
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.invalid_lang_code),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    return@setOnClickListener
-                }
-                dialog.dismiss()
-                createLanguage(qualifier)
-            }
-        }
-        dialog.show()
     }
 
     private fun createLanguage(rawQualifier: String) {
