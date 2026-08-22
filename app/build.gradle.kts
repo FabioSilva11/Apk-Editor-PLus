@@ -1,10 +1,11 @@
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.compose.compiler)
 }
 
 android {
     namespace = "com.saas.apkeditorplus"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.saas.apkeditorplus"
@@ -30,6 +31,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
         isCoreLibraryDesugaringEnabled = true
     }
+    buildFeatures {
+        compose = true
+    }
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -37,6 +41,13 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 dependencies {
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.activity.compose)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)

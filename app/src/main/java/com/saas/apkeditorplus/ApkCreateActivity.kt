@@ -29,6 +29,7 @@ class ApkCreateActivity : BaseActivity() {
     private lateinit var ivResult: ImageView
     private lateinit var apkPath: String
     private lateinit var modifiedFiles: Bundle
+    private var deletedEntries: Set<String> = emptySet()
     private var outputApkFile: File? = null
     private var targetPackageName: String? = null
 
@@ -46,6 +47,7 @@ class ApkCreateActivity : BaseActivity() {
 
         apkPath = intent.getStringExtra("apkPath") ?: ""
         modifiedFiles = intent.getBundleExtra("modifiedFiles") ?: Bundle()
+        deletedEntries = intent.getStringArrayListExtra("deletedEntries")?.toSet().orEmpty()
 
         findViewById<Button>(R.id.button_close).setOnClickListener { finish() }
         btnUninstall.setOnClickListener { uninstallOriginal() }
@@ -142,10 +144,15 @@ class ApkCreateActivity : BaseActivity() {
         ZipFile(apkPath).use { zipFile ->
             ZipOutputStream(FileOutputStream(outputFile)).use { zos ->
                 val compiledDexFiles = linkedMapOf<String, File>()
+                val writtenEntries = linkedSetOf<String>()
                 val entries = zipFile.entries()
 
                 while (entries.hasMoreElements()) {
                     val entry = entries.nextElement()
+
+                    if (isDeletedEntry(entry.name)) {
+                        continue
+                    }
 
                     if (entry.name.startsWith("META-INF/") &&
                         (entry.name.endsWith(".SF") ||
@@ -155,46 +162,89 @@ class ApkCreateActivity : BaseActivity() {
                         continue
                     }
 
+                    writtenEntries.add(entry.name)
                     zos.putNextEntry(ZipEntry(entry.name))
 
                     val modifiedPath = modifiedFiles.getString(entry.name)
                     if (modifiedPath != null) {
                         val modifiedFile = File(modifiedPath)
-                        if (FullEditRepository.isDexEntry(entry.name) && modifiedFile.isDirectory) {
-                            val compiledDex = compiledDexFiles.getOrPut(entry.name) {
-                                updateProgress("${getString(R.string.rebuilding_apk)} (${entry.name})")
-                                FullEditRepository.compileSmaliWorkspaceToDex(
-                                    context = this,
-                                    apkPath = apkPath,
-                                    dexEntryName = entry.name,
-                                    smaliDir = modifiedFile
-                                )
-                            }
-                            compiledDex.inputStream().use { it.copyTo(zos) }
-                        } else if (isAxmlFile(entry.name)) {
-                            if (isBinaryAxml(modifiedFile)) {
-                                modifiedFile.inputStream().use { it.copyTo(zos) }
-                            } else {
-                                val xmlString = modifiedFile.readText()
-                                val encoder = AxmlEncoder()
-                                val binaryData = encoder.encode(xmlString, this)
-                                if (binaryData != null) {
-                                    zos.write(binaryData as ByteArray)
-                                } else {
-                                    modifiedFile.inputStream().use { it.copyTo(zos) }
-                                }
-                            }
-                        } else {
-                            modifiedFile.inputStream().use { it.copyTo(zos) }
-                        }
+                        writeModifiedEntry(entry.name, modifiedFile, zos, compiledDexFiles)
                     } else {
                         zipFile.getInputStream(entry).use { it.copyTo(zos) }
                     }
 
                     zos.closeEntry()
                 }
+
+                modifiedFiles.keySet()
+                    .asSequence()
+                    .filterNot(writtenEntries::contains)
+                    .filterNot(::isDeletedEntry)
+                    .sorted()
+                    .forEach { entryName ->
+                        require(isSafeArchiveEntry(entryName)) { "Invalid archive entry: $entryName" }
+                        val modifiedFile = File(modifiedFiles.getString(entryName).orEmpty())
+                        require(modifiedFile.exists()) { "Modified file not found: $entryName" }
+
+                        val normalizedName = if (modifiedFile.isDirectory && !entryName.endsWith('/')) {
+                            "$entryName/"
+                        } else {
+                            entryName
+                        }
+                        zos.putNextEntry(ZipEntry(normalizedName))
+                        if (modifiedFile.isFile) {
+                            writeModifiedEntry(normalizedName, modifiedFile, zos, compiledDexFiles)
+                        }
+                        zos.closeEntry()
+                    }
             }
         }
+    }
+
+    private fun writeModifiedEntry(
+        entryName: String,
+        modifiedFile: File,
+        zos: ZipOutputStream,
+        compiledDexFiles: MutableMap<String, File>
+    ) {
+        if (FullEditRepository.isDexEntry(entryName) && modifiedFile.isDirectory) {
+            val compiledDex = compiledDexFiles.getOrPut(entryName) {
+                updateProgress("${getString(R.string.rebuilding_apk)} ($entryName)")
+                FullEditRepository.compileSmaliWorkspaceToDex(
+                    context = this,
+                    apkPath = apkPath,
+                    dexEntryName = entryName,
+                    smaliDir = modifiedFile
+                )
+            }
+            compiledDex.inputStream().use { it.copyTo(zos) }
+        } else if (isAxmlFile(entryName)) {
+            if (isBinaryAxml(modifiedFile)) {
+                modifiedFile.inputStream().use { it.copyTo(zos) }
+            } else {
+                val binaryData = AxmlEncoder().encode(modifiedFile.readText(), this)
+                if (binaryData != null) {
+                    zos.write(binaryData as ByteArray)
+                } else {
+                    modifiedFile.inputStream().use { it.copyTo(zos) }
+                }
+            }
+        } else {
+            modifiedFile.inputStream().use { it.copyTo(zos) }
+        }
+    }
+
+    private fun isDeletedEntry(entryName: String): Boolean {
+        return deletedEntries.any { deleted ->
+            entryName == deleted || (deleted.endsWith('/') && entryName.startsWith(deleted))
+        }
+    }
+
+    private fun isSafeArchiveEntry(entryName: String): Boolean {
+        return entryName.isNotBlank() &&
+            !entryName.startsWith('/') &&
+            !entryName.startsWith('\\') &&
+            entryName.split('/', '\\').none { it == ".." }
     }
 
     private fun isAxmlFile(name: String): Boolean {

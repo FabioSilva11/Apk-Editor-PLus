@@ -41,6 +41,10 @@
     <string name="app_display">App display</string>
     <string name="app_list_order">App list ordered by</string>
     <string name="app_name">Apk Editor Plus</string>
+    <string name="home_subtitle">Edite, assine e inspecione APKs</string>
+    <string name="home_all_tools">Todas as ferramentas</string>
+    <string name="home_toggle_theme">Alternar tema</string>
+    <string name="home_more_options">Mais opções</string>
     <string name="appdm_apk_build_time">APK build time</string>
     <string name="appdm_apk_file_path">APK file path</string>
     <string name="appdm_app_name">App name</string>
@@ -126,6 +130,7 @@
     <string name="failed_create_dir">Failed to create directory: %s</string>
     <string name="failed_format">Strings failed: %d</string>
     <string name="file_added">File added: %s</string>
+    <string name="file_deleted">File removed from this build</string>
     <string name="file_already_exist">“%s” already exists</string>
     <string name="file_replaced">File replaced</string>
     <string name="file_saved">File saved</string>
@@ -141,6 +146,9 @@
     <string name="full_edit_ui_only_subtitle">UI preview only</string>
     <string name="full_edit_ui_only_message">This Full Edit screen is UI only right now.</string>
     <string name="folder_label">Folder</string>
+    <string name="folder_added">Folder added</string>
+    <string name="full_edit_delete_confirm">Remove “%1$s” from the rebuilt APK?</string>
+    <string name="invalid_file_name">Invalid file or folder name</string>
     <string name="general_error">Error: %s</string>
     <string name="hackable">You can break it</string>
     <string name="hello_world">Hello world!</string>

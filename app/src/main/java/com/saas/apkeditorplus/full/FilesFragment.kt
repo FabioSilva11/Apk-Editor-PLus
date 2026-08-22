@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
@@ -17,6 +18,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
@@ -64,6 +66,12 @@ class FilesFragment : Fragment() {
         val workspaceRelativePath: String? = null
     )
 
+    private data class AdditionTarget(
+        val archivePath: String,
+        val workspace: FullEditRepository.SmaliWorkspace?,
+        val smaliPath: String
+    )
+
     private lateinit var pathView: TextView
     private lateinit var listView: ListView
     private lateinit var keywordEdit: EditText
@@ -77,6 +85,7 @@ class FilesFragment : Fragment() {
     private var visibleItems = emptyList<BrowserItem>()
     private var pendingEditorTarget: EditorTarget? = null
     private var pendingReplacementTarget: ReplacementTarget? = null
+    private var pendingAdditionTarget: AdditionTarget? = null
 
     private val editorLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -96,6 +105,16 @@ class FilesFragment : Fragment() {
         pendingReplacementTarget = null
         if (uri != null) {
             replaceEntry(target, uri)
+        }
+    }
+
+    private val addFileLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val target = pendingAdditionTarget ?: return@registerForActivityResult
+        pendingAdditionTarget = null
+        if (uri != null) {
+            addSelectedFile(target, uri)
         }
     }
 
@@ -150,10 +169,11 @@ class FilesFragment : Fragment() {
             loadFiles()
         }
         view.findViewById<View>(R.id.add_file_button).setOnClickListener {
-            Toast.makeText(requireContext(), getString(R.string.action_future_update), Toast.LENGTH_SHORT).show()
+            pendingAdditionTarget = currentAdditionTarget()
+            addFileLauncher.launch(arrayOf("*/*"))
         }
         view.findViewById<View>(R.id.add_folder_button).setOnClickListener {
-            Toast.makeText(requireContext(), getString(R.string.action_future_update), Toast.LENGTH_SHORT).show()
+            showAddFolderDialog()
         }
 
         loadFiles()
@@ -197,17 +217,65 @@ class FilesFragment : Fragment() {
     }
 
     private fun loadArchiveItems(context: android.content.Context, apkPath: String): List<BrowserItem> {
-        return FullEditRepository.listDirectory(apkPath, currentArchivePath).map { item ->
-            val modified = host().isEntryModified(item.entryName)
-            BrowserItem(
-                entryName = item.entryName,
-                displayName = item.displayName,
-                detail = buildArchiveDetail(item, modified),
-                isDirectory = item.isDirectory,
-                kind = resolveArchiveKind(item),
-                modified = modified
+        val modifiedNames = host().modifiedEntryNames()
+        val combined = linkedMapOf<String, BrowserItem>()
+
+        FullEditRepository.listDirectory(apkPath, currentArchivePath)
+            .filterNot { host().isEntryDeleted(it.entryName) }
+            .forEach { item ->
+                val modified = host().isEntryModified(item.entryName) ||
+                    (item.isDirectory && modifiedNames.any { it.startsWith(item.entryName) })
+                combined[item.entryName] = BrowserItem(
+                    entryName = item.entryName,
+                    displayName = item.displayName,
+                    detail = buildArchiveDetail(item, modified),
+                    isDirectory = item.isDirectory,
+                    kind = resolveArchiveKind(item),
+                    modified = modified
+                )
+            }
+
+        modifiedNames.forEach { entryName ->
+            if (host().isEntryDeleted(entryName) || !entryName.startsWith(currentArchivePath)) {
+                return@forEach
+            }
+            val relativeName = entryName.removePrefix(currentArchivePath)
+            if (relativeName.isBlank()) {
+                return@forEach
+            }
+            val firstSlash = relativeName.indexOf('/')
+            val isDirectory = firstSlash >= 0
+            val displayName = if (isDirectory) relativeName.substring(0, firstSlash) else relativeName
+            if (displayName.isBlank()) {
+                return@forEach
+            }
+            val visibleEntryName = currentArchivePath + displayName + if (isDirectory) "/" else ""
+            if (combined.containsKey(visibleEntryName)) {
+                return@forEach
+            }
+            val kind = when {
+                isDirectory -> ItemKind.FOLDER
+                visibleEntryName == FullEditRepository.MANIFEST_ENTRY -> ItemKind.MANIFEST
+                FullEditRepository.isDexEntry(visibleEntryName) -> ItemKind.DEX
+                visibleEntryName.endsWith(".xml", ignoreCase = true) -> ItemKind.XML
+                FullEditRepository.isEditableTextEntry(visibleEntryName) -> ItemKind.TEXT
+                else -> ItemKind.BINARY
+            }
+            combined[visibleEntryName] = BrowserItem(
+                entryName = visibleEntryName,
+                displayName = displayName,
+                detail = getString(R.string.str_modified),
+                isDirectory = isDirectory,
+                kind = kind,
+                modified = true
             )
         }
+
+        return combined.values.sortedWith(
+            compareBy<BrowserItem> { it.kind != ItemKind.BACK }
+                .thenBy { !it.isDirectory }
+                .thenBy { it.displayName.lowercase() }
+        )
     }
 
     private fun loadSmaliItems(): List<BrowserItem> {
@@ -537,6 +605,252 @@ class FilesFragment : Fragment() {
         }
     }
 
+    private fun currentAdditionTarget(): AdditionTarget {
+        return AdditionTarget(
+            archivePath = currentArchivePath,
+            workspace = currentSmaliWorkspace,
+            smaliPath = currentSmaliPath
+        )
+    }
+
+    private fun addSelectedFile(target: AdditionTarget, uri: Uri) {
+        val context = requireContext().applicationContext
+        val displayName = sanitizeEntryName(queryDisplayName(uri) ?: "new_file")
+        if (displayName == null) {
+            Toast.makeText(requireContext(), getString(R.string.invalid_file_name), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (additionEntryExists(target, displayName, isDirectory = false)) {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.file_already_exist, displayName),
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        progressBar.visibility = View.VISIBLE
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            val registeredChange = runCatching {
+                withContext(Dispatchers.IO) {
+                    if (target.workspace != null) {
+                        val relativePath = target.smaliPath + displayName
+                        val outputFile = FullEditRepository.resolveSmaliWorkspaceFile(
+                            target.workspace,
+                            relativePath
+                        )
+                        outputFile.parentFile?.mkdirs()
+                        copyUriToFile(context, uri, outputFile)
+                        target.workspace.dexEntryName to target.workspace.rootDir
+                    } else {
+                        val entryName = target.archivePath + displayName
+                        val addDir = File(
+                            context.cacheDir,
+                            "full_edit_added/${apkPath().hashCode().toUInt().toString(16)}"
+                        ).apply { mkdirs() }
+                        val outputFile = File(addDir, entryName.replace('/', File.separatorChar))
+                        outputFile.parentFile?.mkdirs()
+                        copyUriToFile(context, uri, outputFile)
+                        entryName to outputFile
+                    }
+                }
+            }.getOrElse { error ->
+                progressBar.visibility = View.GONE
+                Toast.makeText(
+                    requireContext(),
+                    error.message ?: getString(R.string.failed),
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@launch
+            }
+
+            host().registerModifiedEntry(registeredChange.first, registeredChange.second)
+            progressBar.visibility = View.GONE
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.file_added, registeredChange.first),
+                Toast.LENGTH_SHORT
+            ).show()
+            loadFiles()
+        }
+    }
+
+    private fun showAddFolderDialog() {
+        val input = EditText(requireContext()).apply {
+            hint = getString(R.string.pls_input_foldername)
+            setSingleLine(true)
+        }
+        val dialog = AlertDialog.Builder(requireContext())
+            .setTitle(R.string.new_folder)
+            .setView(input)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val folderName = sanitizeEntryName(input.text?.toString().orEmpty())
+                if (folderName == null) {
+                    input.error = getString(R.string.invalid_file_name)
+                    return@setOnClickListener
+                }
+                addFolder(currentAdditionTarget(), folderName)
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun addFolder(target: AdditionTarget, folderName: String) {
+        val context = requireContext().applicationContext
+        if (additionEntryExists(target, folderName, isDirectory = true)) {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.file_already_exist, folderName),
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        runCatching {
+            if (target.workspace != null) {
+                val relativePath = target.smaliPath + folderName + "/"
+                val folder = FullEditRepository.resolveSmaliWorkspaceFile(target.workspace, relativePath)
+                check(folder.mkdirs() || folder.isDirectory) { getString(R.string.failed_create_dir, folder) }
+                host().registerModifiedEntry(target.workspace.dexEntryName, target.workspace.rootDir)
+            } else {
+                val entryName = target.archivePath + folderName + "/"
+                val folder = File(
+                    context.cacheDir,
+                    "full_edit_added_dirs/${apkPath().hashCode().toUInt().toString(16)}/${entryName.replace('/', File.separatorChar)}"
+                )
+                check(folder.mkdirs() || folder.isDirectory) { getString(R.string.failed_create_dir, folder) }
+                host().registerModifiedEntry(entryName, folder)
+            }
+        }.onFailure { error ->
+            Toast.makeText(
+                requireContext(),
+                error.message ?: getString(R.string.failed),
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        Toast.makeText(requireContext(), getString(R.string.folder_added), Toast.LENGTH_SHORT).show()
+        loadFiles()
+    }
+
+    private fun requestDelete(item: BrowserItem) {
+        if (item.kind == ItemKind.BACK) {
+            return
+        }
+        AlertDialog.Builder(requireContext())
+            .setTitle(R.string.delete)
+            .setMessage(getString(R.string.full_edit_delete_confirm, item.displayName))
+            .setPositiveButton(R.string.delete) { _, _ -> deleteItem(item) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun deleteItem(item: BrowserItem) {
+        val workspace = currentSmaliWorkspace
+        if (workspace != null) {
+            runCatching {
+                val target = FullEditRepository.resolveSmaliWorkspaceFile(workspace, item.entryName)
+                val workspaceRoot = workspace.rootDir.canonicalFile
+                val canonicalTarget = target.canonicalFile
+                check(canonicalTarget.path.startsWith(workspaceRoot.path + File.separator))
+                check(if (canonicalTarget.isDirectory) canonicalTarget.deleteRecursively() else canonicalTarget.delete())
+                host().registerModifiedEntry(workspace.dexEntryName, workspace.rootDir)
+            }.onFailure { error ->
+                Toast.makeText(
+                    requireContext(),
+                    error.message ?: getString(R.string.failed),
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
+        } else {
+            val existedInOriginal = ZipFile(apkPath()).use { zipFile ->
+                if (item.isDirectory) {
+                    zipFile.entries().asSequence().any { it.name.startsWith(item.entryName) }
+                } else {
+                    zipFile.getEntry(item.entryName) != null
+                }
+            }
+            if (existedInOriginal) {
+                host().registerDeletedEntry(item.entryName)
+            } else {
+                host().discardModifiedEntry(item.entryName)
+            }
+        }
+
+        Toast.makeText(requireContext(), getString(R.string.file_deleted), Toast.LENGTH_SHORT).show()
+        loadFiles()
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        return requireContext().contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                null
+            } else {
+                val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameColumn >= 0) cursor.getString(nameColumn) else null
+            }
+        } ?: uri.lastPathSegment
+    }
+
+    private fun sanitizeEntryName(rawName: String): String? {
+        val name = rawName
+            .trim()
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .replace(Regex("[\\u0000-\\u001F]"), "_")
+            .replace(Regex("[<>:\"|?*]"), "_")
+            .trimEnd(' ', '.')
+        return name.takeIf { it.isNotBlank() && it != "." && it != ".." }
+    }
+
+    private fun additionEntryExists(
+        target: AdditionTarget,
+        displayName: String,
+        isDirectory: Boolean
+    ): Boolean {
+        if (target.workspace != null) {
+            val relativePath = target.smaliPath + displayName + if (isDirectory) "/" else ""
+            return FullEditRepository.resolveSmaliWorkspaceFile(target.workspace, relativePath).exists()
+        }
+
+        val entryName = target.archivePath + displayName + if (isDirectory) "/" else ""
+        if (host().isEntryDeleted(entryName)) {
+            return false
+        }
+        if (host().modifiedEntryNames().any { existing ->
+                existing == entryName || (isDirectory && existing.startsWith(entryName))
+            }
+        ) {
+            return true
+        }
+        return ZipFile(apkPath()).use { zipFile ->
+            if (isDirectory) {
+                zipFile.entries().asSequence().any { it.name.startsWith(entryName) }
+            } else {
+                zipFile.getEntry(entryName) != null
+            }
+        }
+    }
+
+    private fun copyUriToFile(context: android.content.Context, uri: Uri, outputFile: File) {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            outputFile.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("Failed to read selected file")
+    }
+
     private fun exportItem(item: BrowserItem) {
         if (item.isDirectory || item.kind == ItemKind.BACK) {
             return
@@ -675,6 +989,10 @@ class FilesFragment : Fragment() {
             menuSave.visibility = if (actionVisible) View.VISIBLE else View.INVISIBLE
 
             rowView.setOnClickListener { openItem(item) }
+            rowView.setOnLongClickListener {
+                requestDelete(item)
+                true
+            }
             menuEdit.setOnClickListener { replaceArchiveItem(item) }
             menuSave.setOnClickListener { exportItem(item) }
             return rowView

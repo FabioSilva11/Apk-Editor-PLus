@@ -6,18 +6,22 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
-import android.view.Menu
-import android.view.MenuItem
-import android.widget.ListView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
+import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.saas.apkeditorplus.ui.home.MainScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 
 class MainActivity : BaseActivity() {
 
     private val storagePermissionCode = 1
+    private var showAbout by mutableStateOf(false)
+    private var showStorageAccess by mutableStateOf(false)
 
     private val mainMenuItems by lazy {
         listOf(
@@ -84,58 +88,31 @@ class MainActivity : BaseActivity() {
         )
     }
 
-    override fun shouldHideActionBar(): Boolean = false
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        supportActionBar?.hide()
 
-        setupMenuList()
+        setContent {
+            ApkEditorTheme {
+                MainScreen(
+                    items = mainMenuItems,
+                    showAboutDialog = showAbout,
+                    showStorageAccessDialog = showStorageAccess,
+                    onDestinationClick = { openDestination(it.destination) },
+                    onToggleTheme = ::toggleTheme,
+                    onShare = ::shareApp,
+                    onOpenTelegram = ::openTelegram,
+                    onShowAbout = { showAbout = true },
+                    onDismissAbout = { showAbout = false },
+                    onOpenStorageSettings = ::openAllFilesAccessSettings,
+                    onDismissStorageAccess = { showStorageAccess = false }
+                )
+            }
+        }
+
         checkStoragePermissions()
-    }
-
-    override fun setupActionBar() {
-        super.setupActionBar()
-        supportActionBar?.let { actionBar ->
-            actionBar.setDisplayHomeAsUpEnabled(true)
-            actionBar.setHomeAsUpIndicator(R.drawable.ic_theme)
-            actionBar.setDisplayShowTitleEnabled(false)
-        }
-    }
-
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.menu_main, menu)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            android.R.id.home -> {
-                toggleTheme()
-                true
-            }
-            R.id.action_share_app -> {
-                shareApp()
-                true
-            }
-            R.id.action_telegram_group -> {
-                openTelegram()
-                true
-            }
-            R.id.action_about -> {
-                showAboutDialog()
-                true
-            }
-            else -> super.onOptionsItemSelected(item)
-        }
-    }
-
-    private fun setupMenuList() {
-        val listView = findViewById<ListView>(R.id.main_menu_list)
-        listView.adapter = MainMenuAdapter(this, mainMenuItems)
-        listView.setOnItemClickListener { _, _, position, _ ->
-            openDestination(mainMenuItems[position].destination)
-        }
     }
 
     private fun openDestination(destination: MainMenuDestination) {
@@ -195,14 +172,6 @@ class MainActivity : BaseActivity() {
         }
     }
 
-    private fun showAboutDialog() {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.menu_about)
-            .setMessage(R.string.about_message)
-            .setPositiveButton(R.string.close, null)
-            .show()
-    }
-
     private fun checkStoragePermissions() {
         val permissions = mutableListOf<String>()
 
@@ -248,22 +217,27 @@ class MainActivity : BaseActivity() {
 
     private fun checkAllFilesAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.permission_needed)
-                .setMessage(R.string.permission_all_files_desc)
-                .setPositiveButton(R.string.settings_button) { _, _ ->
-                    try {
-                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                            addCategory("android.intent.category.DEFAULT")
-                            data = Uri.parse("package:$packageName")
-                        }
-                        startActivity(intent)
-                    } catch (_: Exception) {
-                        startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                    }
-                }
-                .setNegativeButton(R.string.colormixer_cancel, null)
-                .show()
+            showStorageAccess = true
+        }
+    }
+
+    private fun openAllFilesAccessSettings() {
+        showStorageAccess = false
+        try {
+            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                addCategory("android.intent.category.DEFAULT")
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+            showStorageAccess = false
         }
     }
 

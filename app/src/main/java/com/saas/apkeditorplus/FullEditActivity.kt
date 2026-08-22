@@ -39,6 +39,7 @@ class FullEditActivity : BaseActivity() {
     private lateinit var apkInfoLoader: ApkArchiveInfoLoader
 
     private val modifiedFiles = linkedMapOf<String, String>()
+    private val deletedEntries = linkedSetOf<String>()
     private var apkPath: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,8 +83,38 @@ class FullEditActivity : BaseActivity() {
         if (!file.exists()) {
             return
         }
+        deletedEntries.remove(entryName)
         modifiedFiles[entryName] = file.absolutePath
         updateBuildButtonState()
+    }
+
+    fun registerDeletedEntry(entryName: String) {
+        if (entryName.isBlank()) {
+            return
+        }
+        val isDirectory = entryName.endsWith('/')
+        modifiedFiles.keys
+            .filter { it == entryName || (isDirectory && it.startsWith(entryName)) }
+            .forEach(modifiedFiles::remove)
+        deletedEntries.add(entryName)
+        updateBuildButtonState()
+    }
+
+    fun discardModifiedEntry(entryName: String) {
+        val isDirectory = entryName.endsWith('/')
+        modifiedFiles.keys
+            .filter { it == entryName || (isDirectory && it.startsWith(entryName)) }
+            .forEach(modifiedFiles::remove)
+        deletedEntries.remove(entryName)
+        updateBuildButtonState()
+    }
+
+    fun modifiedEntryNames(): Set<String> = modifiedFiles.keys.toSet()
+
+    fun isEntryDeleted(entryName: String): Boolean {
+        return deletedEntries.any { deleted ->
+            entryName == deleted || (deleted.endsWith('/') && entryName.startsWith(deleted))
+        }
     }
 
     fun resolveModifiedEntry(entryName: String): File? {
@@ -167,15 +198,17 @@ class FullEditActivity : BaseActivity() {
     }
 
     private fun updateBuildButtonState() {
-        actionBuildButton.alpha = if (modifiedFiles.isEmpty()) 0.74f else 1f
+        actionBuildButton.alpha = if (hasPendingChanges()) 1f else 0.74f
     }
+
+    private fun hasPendingChanges(): Boolean = modifiedFiles.isNotEmpty() || deletedEntries.isNotEmpty()
 
     private fun startBuildFlow() {
         if (apkPath.isBlank()) {
             Toast.makeText(this, getString(R.string.apk_path_not_found), Toast.LENGTH_SHORT).show()
             return
         }
-        if (modifiedFiles.isEmpty()) {
+        if (!hasPendingChanges()) {
             Toast.makeText(this, getString(R.string.no_change_detected), Toast.LENGTH_SHORT).show()
             return
         }
@@ -190,12 +223,13 @@ class FullEditActivity : BaseActivity() {
             Intent(this, ApkCreateActivity::class.java).apply {
                 putExtra("apkPath", apkPath)
                 putExtra("modifiedFiles", bundle)
+                putStringArrayListExtra("deletedEntries", ArrayList(deletedEntries))
             }
         )
     }
 
     override fun onBackPressed() {
-        if (modifiedFiles.isEmpty()) {
+        if (!hasPendingChanges()) {
             super.onBackPressed()
             return
         }
