@@ -37,8 +37,8 @@ object ApkPatchEngine {
                 when (lines[index].trim()) {
                     "[ADD_FILES]" -> {
                         val block = block(lines, index + 1, "[/ADD_FILES]")
-                        val source = resolve(valueAfter(block.lines, "SOURCE:") ?: error("SOURCE ausente em ADD_FILES"), variables)
-                        val target = resolve(
+                        val source = resolveVariables(valueAfter(block.lines, "SOURCE:") ?: error("SOURCE ausente em ADD_FILES"), variables)
+                        val target = resolveVariables(
                             valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em ADD_FILES"),
                             variables
                         ).removeSuffix("/")
@@ -57,7 +57,7 @@ object ApkPatchEngine {
                         val marker = block.lines.indexOfFirst { it.trim() == "TARGET:" }
                         require(marker >= 0) { "TARGET ausente em REMOVE_FILES" }
                         block.lines.drop(marker + 1).map(String::trim).filter(String::isNotBlank).forEach { rawTarget ->
-                            val target = resolve(rawTarget, variables)
+                            val target = resolveVariables(rawTarget, variables)
                             validateEntryName(target)
                             deletions += target
                             replacements.remove(target)
@@ -68,15 +68,19 @@ object ApkPatchEngine {
                     }
                     "[MATCH_REPLACE]" -> {
                         val block = block(lines, index + 1, "[/MATCH_REPLACE]")
-                        val targetPattern = resolve(valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em MATCH_REPLACE"), variables)
+                        val targetPattern = resolveVariables(valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em MATCH_REPLACE"), variables)
                         val regexMode = valueAfter(block.lines, "REGEX:").toBoolean()
                         val dotAll = valueAfter(block.lines, "DOTALL:").toBoolean()
-                        val match = resolve(section(block.lines, "MATCH:", setOf("REPLACE:", "REGEX:", "DOTALL:", "TARGET:", "NAME:"))
+                        val match = resolveVariables(section(block.lines, "MATCH:", setOf("REPLACE:", "REGEX:", "DOTALL:", "TARGET:", "NAME:"))
                             .joinToString("\n"), variables)
-                        val replacement = resolve(section(block.lines, "REPLACE:", setOf("MATCH:", "REGEX:", "DOTALL:", "TARGET:", "NAME:"))
+                        val replacement = resolveVariables(section(block.lines, "REPLACE:", setOf("MATCH:", "REGEX:", "DOTALL:", "TARGET:", "NAME:"))
                             .joinToString("\n"), variables)
                         require(match.isNotEmpty()) { "MATCH vazio" }
-                        val targets = matchingTargets(sourceApk, targetPattern, existingReplacements.keys)
+                        val targets = matchingTargets(
+                            sourceApk,
+                            targetPattern,
+                            existingReplacements.keys + replacements.keys
+                        )
                         require(targets.isNotEmpty()) { "Nenhum arquivo corresponde a $targetPattern" }
                         targets.forEach { target ->
                             val current = replacements[target]?.readText()
@@ -103,9 +107,9 @@ object ApkPatchEngine {
                     }
                     "[MATCH_ASSIGN]" -> {
                         val block = block(lines, index + 1, "[/MATCH_ASSIGN]")
-                        val targetPattern = resolve(valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em MATCH_ASSIGN"), variables)
+                        val targetPattern = resolveVariables(valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em MATCH_ASSIGN"), variables)
                         val regexMode = valueAfter(block.lines, "REGEX:").toBoolean()
-                        val matchText = resolve(section(block.lines, "MATCH:", setOf("ASSIGN:", "REGEX:", "TARGET:", "NAME:"))
+                        val matchText = resolveVariables(section(block.lines, "MATCH:", setOf("ASSIGN:", "REGEX:", "TARGET:", "NAME:"))
                             .joinToString("\n"), variables)
                         val assignments = section(block.lines, "ASSIGN:", setOf("MATCH:", "REGEX:", "TARGET:", "NAME:"))
                         val matched = findMatch(sourceApk, targetPattern, matchText, regexMode, replacements, existingReplacements)
@@ -117,7 +121,7 @@ object ApkPatchEngine {
                             matched.groupValues.drop(1).forEachIndexed { groupIndex, group ->
                                 value = value.replace("${'$'}{GROUP${groupIndex + 1}}", group)
                             }
-                            variables[key] = resolve(value, variables)
+                            variables[key] = resolveVariables(value, variables)
                         }
                         applied++
                         reports += "Variáveis definidas: ${assignments.size}"
@@ -125,11 +129,11 @@ object ApkPatchEngine {
                     }
                     "[MATCH_GOTO]" -> {
                         val block = block(lines, index + 1, "[/MATCH_GOTO]")
-                        val targetPattern = resolve(valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em MATCH_GOTO"), variables)
+                        val targetPattern = resolveVariables(valueAfter(block.lines, "TARGET:") ?: error("TARGET ausente em MATCH_GOTO"), variables)
                         val regexMode = valueAfter(block.lines, "REGEX:").toBoolean()
-                        val matchText = resolve(section(block.lines, "MATCH:", setOf("GOTO:", "REGEX:", "TARGET:", "NAME:"))
+                        val matchText = resolveVariables(section(block.lines, "MATCH:", setOf("GOTO:", "REGEX:", "TARGET:", "NAME:"))
                             .joinToString("\n"), variables)
-                        val destination = resolve(valueAfter(block.lines, "GOTO:") ?: error("GOTO ausente em MATCH_GOTO"), variables)
+                        val destination = resolveVariables(valueAfter(block.lines, "GOTO:") ?: error("GOTO ausente em MATCH_GOTO"), variables)
                         val matched = findMatch(sourceApk, targetPattern, matchText, regexMode, replacements, existingReplacements) != null
                         index = if (matched) findNamedRule(lines, destination) else block.nextIndex
                         reports += if (matched) "Desvio aplicado: $destination" else "Condição não encontrada: $destination"
@@ -137,7 +141,7 @@ object ApkPatchEngine {
                     }
                     "[GOTO]" -> {
                         val block = block(lines, index + 1, "[/GOTO]")
-                        val destination = resolve(valueAfter(block.lines, "GOTO:") ?: error("Destino ausente em GOTO"), variables)
+                        val destination = resolveVariables(valueAfter(block.lines, "GOTO:") ?: error("Destino ausente em GOTO"), variables)
                         index = findNamedRule(lines, destination)
                     }
                     "[DUMMY]" -> {
@@ -146,7 +150,7 @@ object ApkPatchEngine {
                     }
                     "[MERGE]" -> {
                         val block = block(lines, index + 1, "[/MERGE]")
-                        val source = resolve(valueAfter(block.lines, "SOURCE:") ?: error("SOURCE ausente em MERGE"), variables)
+                        val source = resolveVariables(valueAfter(block.lines, "SOURCE:") ?: error("SOURCE ausente em MERGE"), variables)
                         val nestedEntry = patchZip.getEntry(source) ?: error("Arquivo $source não encontrado no patch")
                         val nestedFile = File(outputDir, "merge_${applied}.zip")
                         patchZip.getInputStream(nestedEntry).use { input -> nestedFile.outputStream().use(input::copyTo) }
@@ -201,10 +205,10 @@ object ApkPatchEngine {
         return lines.drop(index + 1).firstOrNull { it.trim().isNotBlank() }?.trim().takeIf { index >= 0 }
     }
 
-    private fun resolve(value: String, variables: Map<String, String>): String {
+    internal fun resolveVariables(value: String, variables: Map<String, String>): String {
         var resolved = value
         repeat(8) {
-            val next = Regex("\\$\\{([A-Za-z_][A-Za-z0-9_]*)}").replace(resolved) { match ->
+            val next = Regex("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}").replace(resolved) { match ->
                 variables[match.groupValues[1]] ?: match.value
             }
             if (next == resolved) return resolved
@@ -268,7 +272,7 @@ object ApkPatchEngine {
         return lines.drop(start + 1).takeWhile { it.trim() !in otherMarkers }
     }
 
-    private fun matchingTargets(apk: File, pattern: String, addedEntries: Set<String>): List<String> {
+    internal fun matchingTargets(apk: File, pattern: String, addedEntries: Set<String>): List<String> {
         validateEntryName(pattern.replace("*", "x"))
         val regex = Regex("^" + Regex.escape(pattern).replace("\\*", ".*") + "$")
         return ZipFile(apk).use { zip ->
