@@ -19,12 +19,22 @@ class ApkArchiveInfoLoader(context: Context) {
     private val packageManager = appContext.packageManager
     private val cache = LruCache<String, ApkArchiveInfo>(64)
     private val queuedPaths = Collections.synchronizedSet(mutableSetOf<String>())
+    private val failedPaths = Collections.synchronizedSet(mutableSetOf<String>())
     private val executor = Executors.newSingleThreadExecutor()
 
     fun get(path: String): ApkArchiveInfo? = cache.get(path)
 
+    fun loadBlocking(path: String): ApkArchiveInfo? {
+        cache.get(path)?.let { return it }
+        if (failedPaths.contains(path)) return null
+        return parse(path)?.also { cache.put(path, it) } ?: run {
+            failedPaths.add(path)
+            null
+        }
+    }
+
     fun load(path: String, onLoaded: () -> Unit) {
-        if (cache.get(path) != null || !queuedPaths.add(path)) {
+        if (cache.get(path) != null || failedPaths.contains(path) || !queuedPaths.add(path)) {
             return
         }
 
@@ -32,6 +42,8 @@ class ApkArchiveInfoLoader(context: Context) {
             val parsed = parse(path)
             if (parsed != null) {
                 cache.put(path, parsed)
+            } else {
+                failedPaths.add(path)
             }
             queuedPaths.remove(path)
             onLoaded()

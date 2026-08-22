@@ -3,349 +3,150 @@ package com.saas.apkeditorplus
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.BaseAdapter
-import android.widget.EditText
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.ListView
-import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.widget.PopupMenu
-import androidx.core.content.ContextCompat
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
+import com.saas.apkeditorplus.ui.files.FileBrowserScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
 import java.util.Locale
 
-class FileListActivity : BaseActivity(), AdapterView.OnItemClickListener {
-
-    private data class BrowserItem(
-        val file: File,
-        val isParent: Boolean
-    )
-
-    private class BrowserFileAdapter(
-        private val context: Context,
-        private val apkInfoLoader: ApkArchiveInfoLoader,
-        private val onApkInfoChanged: () -> Unit
-    ) : BaseAdapter() {
-
-        private val inflater = LayoutInflater.from(context)
-        private var currentDirectory: File = File("/")
-        private var items: List<BrowserItem> = emptyList()
-
-        fun submitDirectory(directory: File) {
-            currentDirectory = directory
-            val sortedItems = directory.listFiles()
-                ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase(Locale.getDefault()) }))
-                .orEmpty()
-
-            val newItems = mutableListOf<BrowserItem>()
-            directory.parentFile?.let { parent ->
-                newItems += BrowserItem(parent, true)
-            }
-            sortedItems.forEach { file ->
-                newItems += BrowserItem(file, false)
-            }
-            items = newItems
-            notifyDataSetChanged()
-        }
-
-        override fun getCount(): Int = items.size
-
-        override fun getItem(position: Int): Any = items[position]
-
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val rowView = convertView
-                ?: inflater.inflate(R.layout.item_file, parent, false)
-
-            val iconView = rowView.findViewById<ImageView>(R.id.file_icon)
-            val nameView = rowView.findViewById<TextView>(R.id.file_name)
-            val detailView = rowView.findViewById<TextView>(R.id.file_details)
-            val item = items[position]
-            val file = item.file
-            val tintColor = resolveIconTint()
-
-            if (item.isParent) {
-                nameView.text = ".."
-                detailView.text = currentDirectory.parentFile?.absolutePath.orEmpty()
-                iconView.setImageResource(R.drawable.ic_file_up)
-                iconView.setColorFilter(tintColor)
-                return rowView
-            }
-
-            nameView.text = file.name
-
-            when {
-                file.isDirectory -> {
-                    iconView.setImageResource(R.drawable.ic_folder)
-                    iconView.setColorFilter(tintColor)
-                    detailView.text = context.getString(R.string.folder_label)
-                }
-
-                file.name.endsWith(".apk", ignoreCase = true) -> {
-                    val cachedInfo = apkInfoLoader.get(file.absolutePath)
-                    if (cachedInfo != null) {
-                        iconView.clearColorFilter()
-                        iconView.setImageDrawable(
-                            cachedInfo.icon ?: ContextCompat.getDrawable(context, R.drawable.apk_icon)
-                        )
-                        detailView.text = cachedInfo.label.ifBlank { formatFileSize(file.length()) }
-                    } else {
-                        iconView.clearColorFilter()
-                        iconView.setImageResource(R.drawable.apk_icon)
-                        detailView.text = formatFileSize(file.length())
-                        apkInfoLoader.load(file.absolutePath) {
-                            onApkInfoChanged()
-                        }
-                    }
-                }
-
-                else -> {
-                    iconView.setImageResource(R.drawable.ic_file_unknown)
-                    iconView.setColorFilter(tintColor)
-                    detailView.text = formatFileSize(file.length())
-                }
-            }
-
-            return rowView
-        }
-
-        private fun resolveIconTint(): Int {
-            val typedValue = android.util.TypedValue()
-            context.theme.resolveAttribute(R.attr.iconPrimary, typedValue, true)
-            return typedValue.data
-        }
-
-        private fun formatFileSize(size: Long): String {
-            if (size <= 0L) return "0 B"
-            val units = arrayOf("B", "KB", "MB", "GB", "TB")
-            val digitGroup = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
-            return String.format(
-                Locale.US,
-                "%.1f %s",
-                size / Math.pow(1024.0, digitGroup.toDouble()),
-                units[digitGroup]
-            )
-        }
-    }
-
-    companion object {
-        private const val LAST_DIR_KEY = "apkDirectory"
-    }
-
-    private lateinit var pathView: TextView
-    private lateinit var keywordEdit: EditText
-    private lateinit var searchButton: ImageButton
-    private lateinit var storageToggle: View
-    private lateinit var storageIcon: ImageView
-    private lateinit var listView: ListView
-    private lateinit var adapter: BrowserFileAdapter
+class FileListActivity : BaseActivity() {
     private lateinit var apkInfoLoader: ApkArchiveInfoLoader
+    private var currentDirectory = File("/")
+    private var items by mutableStateOf<List<FileBrowserItem>>(emptyList())
+    private var keyword by mutableStateOf("")
+    private var showingExternalStorage by mutableStateOf(false)
 
-    private var currentDirectory: File = File("/")
-    private var showingExternalStorage: Boolean = false
+    companion object { private const val LAST_DIR_KEY = "apkDirectory" }
+
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_listfile)
-
-        bindViews()
-
+        supportActionBar?.hide()
         apkInfoLoader = ApkArchiveInfoLoader(this)
-        adapter = BrowserFileAdapter(this, apkInfoLoader) {
-            runOnUiThread { adapter.notifyDataSetChanged() }
+        setContent {
+            ApkEditorTheme {
+                FileBrowserScreen(
+                    path = currentDirectory.absolutePath,
+                    items = items,
+                    keyword = keyword,
+                    showingExternal = showingExternalStorage,
+                    onKeywordChange = { keyword = it },
+                    onBack = ::finish,
+                    onItemClick = ::openItem,
+                    onSearch = ::startSearch,
+                    onPrimaryStorage = { openDirectory(StorageRoots.primary(this)) },
+                    onExternalStorage = ::openExternalStorage,
+                    onAppStorage = { openDirectory(filesDir) }
+                )
+            }
         }
-        listView.adapter = adapter
-        listView.onItemClickListener = this
-
-        setupInteractions()
-        openInitialDirectory()
+        val saved = File(getSharedPreferences("config", Context.MODE_PRIVATE)
+            .getString(LAST_DIR_KEY, StorageRoots.primary(this).absolutePath).orEmpty())
+        openDirectory(saved.takeIf { it.isDirectory } ?: StorageRoots.primary(this))
     }
-
-    override fun shouldHideActionBar(): Boolean = true
 
     override fun onDestroy() {
         apkInfoLoader.shutdown()
         super.onDestroy()
     }
 
-    private fun bindViews() {
-        pathView = findViewById(R.id.dirPath)
-        keywordEdit = findViewById(R.id.keyword_edit)
-        searchButton = findViewById(R.id.search_button)
-        storageToggle = findViewById(R.id.menu_switch_card)
-        storageIcon = findViewById(R.id.imageView_extsdcard)
-        listView = findViewById(R.id.file_list)
-    }
-
-    private fun setupInteractions() {
-        searchButton.setOnClickListener { startSearch() }
-        storageToggle.setOnClickListener { switchStorage() }
-        storageToggle.setOnLongClickListener {
-            showStorageMenu(it)
-            true
-        }
-    }
-
-    private fun openInitialDirectory() {
-        val savedDirectory = File(getLastDirectory())
-        val initialDirectory = when {
-            savedDirectory.exists() && savedDirectory.isDirectory -> savedDirectory
-            else -> StorageRoots.primary(this)
-        }
-        openDirectory(initialDirectory)
-    }
-
     private fun openDirectory(directory: File) {
-        val safeDirectory = when {
-            directory.exists() && directory.isDirectory -> directory
-            else -> StorageRoots.primary(this)
-        }
-
-        currentDirectory = safeDirectory
-        showingExternalStorage = isSamePath(safeDirectory, StorageRoots.external(this))
-        adapter.submitDirectory(safeDirectory)
-        pathView.text = safeDirectory.absolutePath
-        setLastDirectory(safeDirectory.absolutePath)
-        updateStorageIcon()
-    }
-
-    private fun switchStorage() {
-        val externalRoot = StorageRoots.external(this)
-        if (showingExternalStorage) {
-            openDirectory(StorageRoots.primary(this))
-            return
-        }
-
-        if (externalRoot == null) {
-            Toast.makeText(this, getString(R.string.cannot_find_ext_sdcard), Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        openDirectory(externalRoot)
-    }
-
-    private fun showStorageMenu(anchor: View) {
-        val popupMenu = PopupMenu(this, anchor)
-        popupMenu.menu.add(0, 1, 0, R.string.sd_card)
-        popupMenu.menu.add(0, 2, 1, R.string.ext_sd_card)
-        popupMenu.menu.add(0, 3, 2, R.string.app_files)
-        popupMenu.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> {
-                    openDirectory(StorageRoots.primary(this))
-                    true
+        val safe = directory.takeIf { it.isDirectory } ?: StorageRoots.primary(this)
+        currentDirectory = safe
+        showingExternalStorage = samePath(safe, StorageRoots.external(this))
+        getSharedPreferences("config", Context.MODE_PRIVATE).edit().putString(LAST_DIR_KEY, safe.absolutePath).apply()
+        val files = safe.listFiles().orEmpty().sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
+        items = buildList {
+            safe.parentFile?.let { add(FileBrowserItem(it, true, null, safe.parentFile?.absolutePath.orEmpty())) }
+            files.forEach { file ->
+                val info = if (file.name.endsWith(".apk", true)) apkInfoLoader.get(file.absolutePath) else null
+                val image = info?.icon?.toBitmap(112, 112)?.asImageBitmap()
+                add(
+                    FileBrowserItem(
+                        file = file,
+                        parent = false,
+                        icon = image,
+                        detail = when {
+                            file.isDirectory -> getString(R.string.folder_label)
+                            info != null -> info.label.ifBlank { formatSize(file.length()) }
+                            else -> formatSize(file.length())
+                        }
+                    )
+                )
+                if (file.name.endsWith(".apk", true) && info == null) {
+                    apkInfoLoader.load(file.absolutePath) { runOnUiThread { if (!isDestroyed) openDirectory(currentDirectory) } }
                 }
-
-                2 -> {
-                    val externalRoot = StorageRoots.external(this)
-                    if (externalRoot != null) {
-                        openDirectory(externalRoot)
-                    } else {
-                        Toast.makeText(this, getString(R.string.cannot_find_ext_sdcard), Toast.LENGTH_SHORT).show()
-                    }
-                    true
-                }
-
-                3 -> {
-                    openDirectory(filesDir)
-                    true
-                }
-
-                else -> false
             }
         }
-        popupMenu.show()
     }
 
-    private fun updateStorageIcon() {
-        storageIcon.setImageResource(R.drawable.ic_sdcard_ext)
-        storageIcon.alpha = if (showingExternalStorage) 1f else 0.72f
-    }
-
-    private fun startSearch() {
-        val intent = Intent(this, ApkSearchActivity::class.java).apply {
-            putExtra("Keyword", keywordEdit.text?.toString().orEmpty().trim())
-            putExtra("Path", currentDirectory.absolutePath)
-        }
-        startActivity(intent)
-    }
-
-    override fun onItemClick(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-        val item = adapter.getItem(position) as BrowserItem
-
+    private fun openItem(item: FileBrowserItem) {
         when {
-            item.isParent -> currentDirectory.parentFile?.let(::openDirectory)
+            item.parent -> currentDirectory.parentFile?.let(::openDirectory)
             item.file.isDirectory -> openDirectory(item.file)
-            item.file.name.endsWith(".apk", ignoreCase = true) -> handleApkSelection(item.file)
+            item.file.name.endsWith(".apk", true) -> handleApkSelection(item.file)
             else -> Toast.makeText(this, getString(R.string.select_apk_file), Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun handleApkSelection(file: File) {
-        file.parentFile?.absolutePath?.let(::setLastDirectory)
-
+        file.parentFile?.let(::openDirectory)
         when {
             intent.getBooleanExtra("select_for_verify", false) -> {
-                setResult(
-                    RESULT_OK,
-                    Intent().apply { putExtra("apkPath", file.absolutePath) }
-                )
-                finish()
+                setResult(RESULT_OK, Intent().putExtra("apkPath", file.absolutePath)); finish()
             }
-
-            intent.getBooleanExtra("select_for_common_edit", false) -> {
-                startEditActivity(EditModeDialog.COMMON_EDIT, file.absolutePath)
-            }
-
-            else -> showEditModeDialog(file.absolutePath)
+            intent.getBooleanExtra("select_for_common_edit", false) -> startEditActivity(EditModeDialog.COMMON_EDIT, file.absolutePath)
+            else -> EditModeDialog(this, file.absolutePath, ::startEditActivity).show()
         }
     }
 
-    private fun showEditModeDialog(apkPath: String) {
-        EditModeDialog(this, apkPath) { mode, path ->
-            startEditActivity(mode, path)
-        }.show()
-    }
-
-    private fun startEditActivity(mode: Int, apkPath: String) {
-        val intent = when (mode) {
-            EditModeDialog.FULL_EDIT -> Intent(this, FullEditActivity::class.java)
-            EditModeDialog.SIMPLE_EDIT -> Intent(this, SimpleEditActivity::class.java)
-            EditModeDialog.COMMON_EDIT -> Intent(this, CommonEditActivity::class.java)
-            EditModeDialog.XML_FILE_EDIT -> Intent(this, AxmlEditActivity::class.java)
+    private fun startEditActivity(mode: Int, path: String) {
+        val target = when (mode) {
+            EditModeDialog.FULL_EDIT -> FullEditActivity::class.java
+            EditModeDialog.SIMPLE_EDIT -> SimpleEditActivity::class.java
+            EditModeDialog.COMMON_EDIT -> CommonEditActivity::class.java
+            EditModeDialog.XML_FILE_EDIT -> AxmlEditActivity::class.java
             else -> null
         }
-
-        intent?.let {
-            it.putExtra("apkPath", apkPath)
-            startActivity(it)
-        } ?: Toast.makeText(this, getString(R.string.edit_mode_not_supported), Toast.LENGTH_SHORT).show()
+        if (target == null) Toast.makeText(this, getString(R.string.edit_mode_not_supported), Toast.LENGTH_SHORT).show()
+        else startActivity(Intent(this, target).putExtra("apkPath", path))
     }
 
-    private fun getLastDirectory(): String {
-        return getSharedPreferences("config", Context.MODE_PRIVATE)
-            .getString(LAST_DIR_KEY, StorageRoots.primary(this).absolutePath)
-            .orEmpty()
+    private fun startSearch() {
+        startActivity(Intent(this, ApkSearchActivity::class.java).apply {
+            putExtra("Keyword", keyword.trim()); putExtra("Path", currentDirectory.absolutePath)
+        })
     }
 
-    private fun setLastDirectory(directory: String) {
-        getSharedPreferences("config", Context.MODE_PRIVATE)
-            .edit()
-            .putString(LAST_DIR_KEY, directory)
-            .apply()
+    private fun openExternalStorage() {
+        StorageRoots.external(this)?.let(::openDirectory)
+            ?: Toast.makeText(this, getString(R.string.cannot_find_ext_sdcard), Toast.LENGTH_SHORT).show()
     }
 
-    private fun isSamePath(first: File?, second: File?): Boolean {
-        if (first == null || second == null) {
-            return false
-        }
-        return runCatching { first.canonicalPath == second.canonicalPath }
-            .getOrDefault(first.absolutePath == second.absolutePath)
+    private fun samePath(first: File?, second: File?): Boolean {
+        if (first == null || second == null) return false
+        return runCatching { first.canonicalPath == second.canonicalPath }.getOrDefault(first.absolutePath == second.absolutePath)
+    }
+
+    private fun formatSize(size: Long): String {
+        if (size <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        val group = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(units.indices)
+        return String.format(Locale.US, "%.1f %s", size / Math.pow(1024.0, group.toDouble()), units[group])
     }
 }
+
+data class FileBrowserItem(
+    val file: File,
+    val parent: Boolean,
+    val icon: ImageBitmap?,
+    val detail: String
+)

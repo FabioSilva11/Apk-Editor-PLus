@@ -3,10 +3,10 @@ package com.saas.apkeditorplus
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.view.View
-import android.widget.ListView
-import android.widget.ProgressBar
-import android.widget.Toast
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.BufferedReader
@@ -14,33 +14,42 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
+import com.saas.apkeditorplus.ui.info.InfoScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 
 class InfoActivity : BaseActivity() {
 
-    private lateinit var adapter: CommitAdapter
-    private lateinit var pbLoading: ProgressBar
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var commits by mutableStateOf<List<GitHubCommit>>(emptyList())
+    private var loading by mutableStateOf(true)
+    private var errorText by mutableStateOf<String?>(null)
 
-    override fun shouldHideActionBar(): Boolean = false
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_info)
-        
-        initializeCommitsList()
+        supportActionBar?.hide()
+        setContent {
+            ApkEditorTheme {
+                InfoScreen(
+                    commits = commits,
+                    loading = loading,
+                    error = errorText,
+                    onBack = ::finish,
+                    onRetry = ::fetchCommits,
+                    onOpenCommit = { commit ->
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/FabioSilva11/Apk-Editor-PLus/commit/${commit.sha}")))
+                    }
+                )
+            }
+        }
         fetchCommits()
     }
 
-    private fun initializeCommitsList() {
-        val listView = findViewById<ListView>(R.id.application_list)
-        pbLoading = findViewById(R.id.progress_bar)
-        adapter = CommitAdapter(this)
-        listView.adapter = adapter
-    }
-
     private fun fetchCommits() {
-        pbLoading.visibility = View.VISIBLE
+        loading = true
+        errorText = null
         
         executor.execute {
             try {
@@ -60,23 +69,28 @@ class InfoActivity : BaseActivity() {
                     val commits: List<GitHubCommit> = Gson().fromJson(response, listType)
 
                     mainHandler.post {
-                        pbLoading.visibility = View.GONE
-                        adapter.setCommits(commits)
+                        loading = false
+                        this.commits = commits
                     }
                 } else {
                     mainHandler.post {
-                        pbLoading.visibility = View.GONE
-                        Toast.makeText(this, getString(R.string.error_loading_commits, connection.responseCode), Toast.LENGTH_SHORT).show()
+                        loading = false
+                        errorText = getString(R.string.error_loading_commits, connection.responseCode)
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 mainHandler.post {
-                    pbLoading.visibility = View.GONE
-                    Toast.makeText(this, getString(R.string.connection_error), Toast.LENGTH_SHORT).show()
+                    loading = false
+                    errorText = getString(R.string.connection_error)
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        executor.shutdownNow()
+        super.onDestroy()
     }
 
 

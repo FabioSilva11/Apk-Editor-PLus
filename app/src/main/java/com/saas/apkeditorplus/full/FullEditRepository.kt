@@ -6,6 +6,7 @@ import com.android.tools.smali.baksmali.BaksmaliOptions
 import com.android.tools.smali.dexlib2.dexbacked.DexBackedDexFile
 import com.android.tools.smali.smali.Smali
 import com.android.tools.smali.smali.SmaliOptions
+import com.saas.apkeditorplus.AppSettings
 import com.saas.apkeditorplus.utils.AxmlDecoder
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -255,7 +256,7 @@ object FullEditRepository {
     }
 
     fun extractEntryForEditing(context: Context, apkPath: String, entryName: String): File {
-        val targetDir = File(context.cacheDir, "full_edit").apply { mkdirs() }
+        val targetDir = AppSettings.workspaceRoot(context, "full_edit")
         val targetFile = File(targetDir, entryName.replace("/", "_"))
 
         ZipFile(apkPath).use { zipFile ->
@@ -294,7 +295,7 @@ object FullEditRepository {
         }
 
         val dexFile = loadDexFileFromApk(apkPath, dexEntryName)
-        val outputDir = File(context.cacheDir, "full_edit_built_dex").apply { mkdirs() }
+        val outputDir = AppSettings.workspaceRoot(context, "full_edit_built_dex")
         val outputDex = File(outputDir, "${workspaceKey(apkPath, dexEntryName)}.dex")
         if (outputDex.exists()) {
             outputDex.delete()
@@ -302,7 +303,8 @@ object FullEditRepository {
 
         val success = Smali.assemble(
             SmaliOptions().apply {
-                apiLevel = dexFile.opcodes.api
+                apiLevel = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+                    .getInt("smali_api", dexFile.opcodes.api)
                 outputDexFile = outputDex.absolutePath
                 jobs = workerCount()
             },
@@ -311,6 +313,7 @@ object FullEditRepository {
         if (!success || !outputDex.exists()) {
             error("Failed to compile smali back to $dexEntryName")
         }
+        DexBackedDexFile(null, outputDex.readBytes()).classes.iterator().hasNext()
 
         return outputDex
     }
@@ -348,7 +351,7 @@ object FullEditRepository {
     }
 
     private fun buildSmaliWorkspaceRoot(context: Context, apkPath: String, dexEntryName: String): File {
-        val baseDir = File(context.cacheDir, "full_edit_smali").apply { mkdirs() }
+        val baseDir = AppSettings.workspaceRoot(context, "full_edit_smali")
         return File(baseDir, "${workspaceKey(apkPath, dexEntryName)}_${sanitizeEntryName(dexEntryName)}")
     }
 
@@ -379,6 +382,49 @@ object FullEditRepository {
     }
 
     private fun workerCount(): Int {
-        return min(4, max(1, Runtime.getRuntime().availableProcessors()))
+        return 1
+    }
+
+    fun searchArchive(
+        apkPath: String,
+        query: String,
+        searchContent: Boolean = true,
+        maxResults: Int = 500
+    ): List<ArchiveItem> {
+        val needle = query.trim()
+        if (needle.isEmpty()) return emptyList()
+        val results = mutableListOf<ArchiveItem>()
+        ZipFile(apkPath).use { zipFile ->
+            val entries = zipFile.entries()
+            while (entries.hasMoreElements() && results.size < maxResults) {
+                val entry = entries.nextElement()
+                if (entry.isDirectory) continue
+                val nameMatch = entry.name.contains(needle, ignoreCase = true)
+                val contentMatch = !nameMatch && searchContent &&
+                    isEditableTextEntry(entry.name) && entry.size in 0..1_048_576 &&
+                    runCatching {
+                        zipFile.getInputStream(entry).bufferedReader().use { reader ->
+                            val buffer = CharArray(4096)
+                            var carry = ""
+                            while (true) {
+                                val count = reader.read(buffer)
+                                if (count < 0) break
+                                val chunk = carry + String(buffer, 0, count)
+                                if (chunk.contains(needle, ignoreCase = true)) return@runCatching true
+                                carry = chunk.takeLast(needle.length.coerceAtMost(256))
+                            }
+                            false
+                        }
+                    }.getOrDefault(false)
+                if (nameMatch || contentMatch) {
+                    results += ArchiveItem(
+                        displayName = entry.name.substringAfterLast('/'),
+                        entryName = entry.name,
+                        isDirectory = false
+                    )
+                }
+            }
+        }
+        return results
     }
 }

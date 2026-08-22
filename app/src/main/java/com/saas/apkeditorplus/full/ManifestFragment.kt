@@ -5,33 +5,61 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
-import android.text.Editable
-import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ListView
-import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.saas.apkeditorplus.AppSettings
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.saas.apkeditorplus.FullEditActivity
 import com.saas.apkeditorplus.R
 import com.saas.apkeditorplus.TextEditBigActivity
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
+import com.saas.apkeditorplus.utils.AxmlDecoder
 import java.io.File
 import java.util.Stack
 import java.util.regex.Pattern
@@ -102,14 +130,12 @@ class ManifestFragment : Fragment() {
         val rawEditable: Boolean
     )
 
-    private lateinit var listView: ListView
-    private lateinit var keywordEdit: EditText
-    private lateinit var progressBar: ProgressBar
-    private lateinit var emptyView: TextView
-
     private var manifestFile: File? = null
     private var allLines = mutableListOf<ManifestLineRecord>()
-    private var visibleLines = mutableListOf<ManifestLineRecord>()
+    private var visibleLines by mutableStateOf<List<ManifestLineRecord>>(emptyList())
+    private var query by mutableStateOf("")
+    private var loading by mutableStateOf(true)
+    private var emptyMessage by mutableStateOf("")
 
     private val manifestDescriptions = mapOf(
         "action" to "Adds an action to an intent filter.",
@@ -144,10 +170,7 @@ class ManifestFragment : Fragment() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            manifestFile?.let { file ->
-                host().registerModifiedEntry(FullEditRepository.MANIFEST_ENTRY, file)
-                loadManifest()
-            }
+            compileAndRegisterManifest(reload = true)
         }
     }
 
@@ -176,46 +199,63 @@ class ManifestFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
-        return inflater.inflate(R.layout.fragment_full_manifest, container, false)
+        return ComposeView(requireContext()).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent { ApkEditorTheme { ManifestContent() } }
+        }
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        listView = view.findViewById(R.id.manifest_list)
-        keywordEdit = view.findViewById(R.id.keyword_edit)
-        progressBar = view.findViewById(R.id.progress_bar)
-        emptyView = view.findViewById(R.id.empty_view)
-
-        listView.emptyView = emptyView
-        listView.adapter = ManifestLineAdapter()
-        listView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-            val record = visibleLines.getOrNull(position) ?: return@OnItemClickListener
-            showLineDialog(record)
-        }
-        listView.onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, position, _ ->
-            val record = visibleLines.getOrNull(position) ?: return@OnItemLongClickListener false
-            showLineActions(record)
-            true
-        }
-
-        keywordEdit.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                refreshVisibleLines(s?.toString().orEmpty())
-            }
-
-            override fun afterTextChanged(s: Editable?) = Unit
-        })
-
-        view.findViewById<View>(R.id.search_button).setOnClickListener {
-            refreshVisibleLines(keywordEdit.text.toString())
-        }
-        view.findViewById<View>(R.id.open_editor_button).setOnClickListener {
-            openManifestInEditor()
-        }
-
         loadManifest()
+    }
+
+    @Composable
+    private fun ManifestContent() {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                Text("AndroidManifest.xml", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(start = 8.dp, top = 12.dp))
+                IconButton(onClick = ::openManifestInEditor) { Icon(Icons.Rounded.Edit, "Abrir editor de texto") }
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it; refreshVisibleLines(it) },
+                placeholder = { Text("Pesquisar no Manifest") },
+                trailingIcon = { Icon(Icons.Rounded.Search, null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!loading && visibleLines.isEmpty()) Text(emptyMessage, Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(visibleLines, key = { it.lineIndex }) { record ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showLineDialog(record) }
+                            .padding(start = (8 + record.indent.coerceAtMost(8) * 12).dp, end = 4.dp, top = 7.dp, bottom = 7.dp)
+                    ) {
+                        val collapsable = record.sectionEnd > record.lineIndex && record.indent > 0
+                        if (collapsable) {
+                            IconButton(onClick = {
+                                record.collapsed = !record.collapsed
+                                refreshVisibleLines(query)
+                            }) { Icon(if (record.collapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore, "Expandir seção") }
+                        } else {
+                            Box(Modifier.size(40.dp))
+                        }
+                        Text(
+                            record.text,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(top = 10.dp)
+                        )
+                        IconButton(onClick = { showLineActions(record) }) { Icon(Icons.Rounded.MoreVert, "Ações") }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
     }
 
     private fun host(): FullEditActivity = requireActivity() as FullEditActivity
@@ -225,8 +265,8 @@ class ManifestFragment : Fragment() {
     private fun loadManifest() {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
-        emptyView.visibility = View.GONE
+        loading = true
+        emptyMessage = ""
 
         viewLifecycleOwner.lifecycleScope.launch {
             val manifest = runCatching {
@@ -235,9 +275,8 @@ class ManifestFragment : Fragment() {
                 }
             }.getOrElse { error ->
                 manifestFile = null
-                progressBar.visibility = View.GONE
-                emptyView.visibility = View.VISIBLE
-                emptyView.text = error.message ?: getString(R.string.failed)
+                loading = false
+                emptyMessage = error.message ?: getString(R.string.failed)
                 return@launch
             }
 
@@ -247,16 +286,15 @@ class ManifestFragment : Fragment() {
                     manifest.readLines()
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
-                emptyView.visibility = View.VISIBLE
-                emptyView.text = error.message ?: getString(R.string.failed)
+                loading = false
+                emptyMessage = error.message ?: getString(R.string.failed)
                 return@launch
             }
 
             allLines = lines.mapIndexed { index, line -> ManifestLineRecord(index, line) }.toMutableList()
             initializeSections()
-            progressBar.visibility = View.GONE
-            refreshVisibleLines(keywordEdit.text.toString())
+            loading = false
+            refreshVisibleLines(query)
         }
     }
 
@@ -302,16 +340,15 @@ class ManifestFragment : Fragment() {
         val normalized = query.trim()
         visibleLines = if (normalized.isNotEmpty()) {
             allLines.filter { !it.deleted && it.rawLine.contains(normalized, ignoreCase = true) }
-                .toMutableList()
+                .toList()
         } else {
-            buildDisplayLines().toMutableList()
+            buildDisplayLines()
         }
-        emptyView.text = if (allLines.isEmpty()) {
+        emptyMessage = if (allLines.isEmpty()) {
             getString(R.string.notfound_in_manifest)
         } else {
             getString(R.string.not_found)
         }
-        (listView.adapter as BaseAdapter).notifyDataSetChanged()
     }
 
     private fun buildDisplayLines(): List<ManifestLineRecord> {
@@ -559,8 +596,31 @@ class ManifestFragment : Fragment() {
             }
         }
         file.writeText(content)
-        host().registerModifiedEntry(FullEditRepository.MANIFEST_ENTRY, file)
-        refreshVisibleLines(keywordEdit.text.toString())
+        refreshVisibleLines(query)
+        compileAndRegisterManifest(reload = false)
+    }
+
+    private fun compileAndRegisterManifest(reload: Boolean) {
+        val context = requireContext().applicationContext
+        loading = true
+        viewLifecycleOwner.lifecycleScope.launch {
+            val compiled = runCatching {
+                withContext(Dispatchers.IO) {
+                    FullEditWorkspaceManager.compileManifest(context, apkPath())
+                }
+            }.getOrElse { error ->
+                loading = false
+                Toast.makeText(
+                    requireContext(),
+                    error.message ?: getString(R.string.failed),
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            host().registerModifiedEntry(FullEditRepository.MANIFEST_ENTRY, compiled)
+            loading = false
+            if (reload) loadManifest()
+        }
     }
 
     private fun replaceManifest(uri: Uri) {
@@ -571,16 +631,26 @@ class ManifestFragment : Fragment() {
         }
 
         val resolver = requireContext().applicationContext.contentResolver
-        progressBar.visibility = View.VISIBLE
+        loading = true
         viewLifecycleOwner.lifecycleScope.launch {
-            val result = runCatching {
+            runCatching {
                 withContext(Dispatchers.IO) {
                     resolver.openInputStream(uri)?.use { input ->
-                        file.outputStream().use { output -> input.copyTo(output) }
+                        val bytes = input.readBytes()
+                        if (isBinaryXml(bytes)) {
+                            AxmlDecoder().decode(
+                                bytes.inputStream(),
+                                file.outputStream()
+                            ).also { decoded ->
+                                check(decoded) { "Failed to decode selected Manifest" }
+                            }
+                        } else {
+                            file.writeBytes(bytes)
+                        }
                     } ?: error("Failed to read selected file")
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -589,12 +659,19 @@ class ManifestFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
-            result
-            host().registerModifiedEntry(FullEditRepository.MANIFEST_ENTRY, file)
+            loading = false
             Toast.makeText(requireContext(), getString(R.string.file_saved), Toast.LENGTH_SHORT).show()
-            loadManifest()
+            compileAndRegisterManifest(reload = true)
         }
+    }
+
+    private fun isBinaryXml(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        val magic = (bytes[0].toInt() and 0xff) or
+            ((bytes[1].toInt() and 0xff) shl 8) or
+            ((bytes[2].toInt() and 0xff) shl 16) or
+            ((bytes[3].toInt() and 0xff) shl 24)
+        return magic == 0x00080003
     }
 
     private fun exportManifest() {
@@ -604,7 +681,7 @@ class ManifestFragment : Fragment() {
             return
         }
 
-        progressBar.visibility = View.VISIBLE
+        loading = true
         viewLifecycleOwner.lifecycleScope.launch {
             val outputFile = runCatching {
                 withContext(Dispatchers.IO) {
@@ -612,12 +689,18 @@ class ManifestFragment : Fragment() {
                         .getExternalFilesDir("full_edit_export")
                         ?: requireContext().applicationContext.filesDir
                     exportDir.mkdirs()
-                    val targetFile = uniqueTargetFile(exportDir, FullEditRepository.MANIFEST_ENTRY)
+                    val overwrite = AppSettings.prefs(requireContext())
+                        .getString(AppSettings.FILE_RENAME_MODE, "auto") == "overwrite"
+                    val targetFile = AppSettings.exportTarget(
+                        exportDir,
+                        FullEditRepository.MANIFEST_ENTRY,
+                        overwrite
+                    )
                     file.copyTo(targetFile, overwrite = true)
                     targetFile
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -626,25 +709,9 @@ class ManifestFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             Toast.makeText(requireContext(), outputFile.absolutePath, Toast.LENGTH_LONG).show()
         }
-    }
-
-    private fun uniqueTargetFile(directory: File, desiredName: String): File {
-        var candidate = File(directory, desiredName)
-        if (!candidate.exists()) {
-            return candidate
-        }
-        val dotIndex = desiredName.lastIndexOf('.')
-        val baseName = if (dotIndex >= 0) desiredName.substring(0, dotIndex) else desiredName
-        val extension = if (dotIndex >= 0) desiredName.substring(dotIndex) else ""
-        var counter = 1
-        while (candidate.exists()) {
-            candidate = File(directory, "${baseName}_$counter$extension")
-            counter += 1
-        }
-        return candidate
     }
 
     private fun openManifestInEditor() {
@@ -662,32 +729,4 @@ class ManifestFragment : Fragment() {
         )
     }
 
-    private inner class ManifestLineAdapter : BaseAdapter() {
-        override fun getCount(): Int = visibleLines.size
-
-        override fun getItem(position: Int): Any = visibleLines[position]
-
-        override fun getItemId(position: Int): Long = visibleLines[position].lineIndex.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val rowView = convertView
-                ?: layoutInflater.inflate(R.layout.item_manifest_line, parent, false)
-            val record = visibleLines[position]
-            val lineView = rowView.findViewById<TextView>(R.id.line_data)
-            val collapseIcon = rowView.findViewById<ImageView>(R.id.collapse_icon)
-
-            val prefix = "    ".repeat(record.indent.coerceAtLeast(0))
-            lineView.typeface = Typeface.MONOSPACE
-            lineView.text = prefix + record.text
-
-            val collapsable = record.sectionEnd > record.lineIndex
-            collapseIcon.isVisible = record.indent > 0 && collapsable
-            collapseIcon.rotation = if (record.collapsed) -90f else 0f
-            collapseIcon.setOnClickListener {
-                record.collapsed = !record.collapsed
-                refreshVisibleLines(keywordEdit.text.toString())
-            }
-            return rowView
-        }
-    }
 }

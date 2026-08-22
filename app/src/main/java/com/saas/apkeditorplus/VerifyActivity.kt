@@ -3,24 +3,44 @@ package com.saas.apkeditorplus
 import android.os.Bundle
 import android.content.Intent
 import com.saas.apkeditorplus.utils.Verify
-import android.widget.TextView
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
+import com.saas.apkeditorplus.ui.verify.VerifyScreen
 
 class VerifyActivity : BaseActivity() {
     
-    private lateinit var textView: TextView
+    private var resultText by mutableStateOf("")
+    private var loading by mutableStateOf(false)
+
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_verify)
-        
-        textView = findViewById(R.id.verify_text_view)
+        supportActionBar?.hide()
+        setContent {
+            ApkEditorTheme {
+                VerifyScreen(
+                    result = resultText,
+                    loading = loading,
+                    onBack = ::finish,
+                    onSelectAnother = ::openSelector
+                )
+            }
+        }
         
         // Abre o seletor de arquivos ao iniciar se for a primeira vez
         if (savedInstanceState == null) {
-            val intent = Intent(this, FileListActivity::class.java)
-            intent.putExtra("select_for_verify", true)
-            startActivityForResult(intent, 1001)
+            openSelector()
         }
+    }
+
+    private fun openSelector() {
+        val intent = Intent(this, FileListActivity::class.java)
+        intent.putExtra("select_for_verify", true)
+        startActivityForResult(intent, 1001)
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -32,20 +52,22 @@ class VerifyActivity : BaseActivity() {
             }
         } else if (requestCode == 1001 && resultCode == RESULT_CANCELED) {
             // Se o usuário cancelou a seleção sem escolher nada, fecha a atividade
-            if (textView.text.isEmpty()) {
+            if (resultText.isEmpty()) {
                 finish()
             }
         }
     }
 
     private fun verifyApk(path: String) {
-        textView.text = "Verifying...\n$path"
+        loading = true
+        resultText = path
         
         // Executamos em uma thread separada para não travar a UI
         Thread {
             val result = Verify.verify(path)
             runOnUiThread {
-                textView.text = result
+                resultText = result
+                loading = false
             }
         }.start()
     }

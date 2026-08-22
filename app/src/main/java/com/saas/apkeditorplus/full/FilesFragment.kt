@@ -5,27 +5,50 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.text.Editable
-import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.BaseAdapter
 import android.widget.EditText
-import android.widget.ImageView
-import android.widget.ListView
-import android.widget.ProgressBar
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.core.content.ContextCompat
-import androidx.core.view.isVisible
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.unit.dp
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.saas.apkeditorplus.AppSettings
 import com.saas.apkeditorplus.FullEditActivity
 import com.saas.apkeditorplus.R
 import com.saas.apkeditorplus.TextEditBigActivity
+import com.saas.apkeditorplus.ui.files.FileVisualKind
+import com.saas.apkeditorplus.ui.files.UnifiedFileRow
+import com.saas.apkeditorplus.ui.files.classifyFile
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
 import java.util.zip.ZipFile
 import kotlinx.coroutines.Dispatchers
@@ -72,17 +95,15 @@ class FilesFragment : Fragment() {
         val smaliPath: String
     )
 
-    private lateinit var pathView: TextView
-    private lateinit var listView: ListView
-    private lateinit var keywordEdit: EditText
-    private lateinit var progressBar: ProgressBar
-    private lateinit var emptyView: TextView
-
     private var currentArchivePath: String = ""
     private var currentSmaliWorkspace: FullEditRepository.SmaliWorkspace? = null
     private var currentSmaliPath: String = ""
     private var allItems = emptyList<BrowserItem>()
-    private var visibleItems = emptyList<BrowserItem>()
+    private var visibleItems by mutableStateOf<List<BrowserItem>>(emptyList())
+    private var query by mutableStateOf("")
+    private var pathLabel by mutableStateOf("")
+    private var loading by mutableStateOf(true)
+    private var emptyMessage by mutableStateOf("")
     private var pendingEditorTarget: EditorTarget? = null
     private var pendingReplacementTarget: ReplacementTarget? = null
     private var pendingAdditionTarget: AdditionTarget? = null
@@ -135,48 +156,72 @@ class FilesFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
-        return inflater.inflate(R.layout.fragment_full_files, container, false)
+        return ComposeView(requireContext()).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent { ApkEditorTheme { FilesContent() } }
+        }
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        pathView = view.findViewById(R.id.current_path)
-        listView = view.findViewById(R.id.file_list)
-        keywordEdit = view.findViewById(R.id.keyword_edit)
-        progressBar = view.findViewById(R.id.progress_bar)
-        emptyView = view.findViewById(R.id.empty_view)
-
-        listView.emptyView = emptyView
-        listView.adapter = FilesAdapter()
-
-        keywordEdit.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                applyFilter(s?.toString().orEmpty())
-            }
-
-            override fun afterTextChanged(s: Editable?) = Unit
-        })
-
-        view.findViewById<View>(R.id.search_button).setOnClickListener {
-            applyFilter(keywordEdit.text.toString())
-        }
-        view.findViewById<View>(R.id.home_button).setOnClickListener {
-            currentSmaliWorkspace = null
-            currentSmaliPath = ""
-            currentArchivePath = ""
-            loadFiles()
-        }
-        view.findViewById<View>(R.id.add_file_button).setOnClickListener {
-            pendingAdditionTarget = currentAdditionTarget()
-            addFileLauncher.launch(arrayOf("*/*"))
-        }
-        view.findViewById<View>(R.id.add_folder_button).setOnClickListener {
-            showAddFolderDialog()
-        }
-
         loadFiles()
+    }
+
+    @Composable
+    private fun FilesContent() {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                IconButton(onClick = {
+                    currentSmaliWorkspace = null
+                    currentSmaliPath = ""
+                    currentArchivePath = ""
+                    loadFiles()
+                }) { Icon(Icons.Rounded.Home, "Início") }
+                IconButton(onClick = {
+                    pendingAdditionTarget = currentAdditionTarget()
+                    addFileLauncher.launch(arrayOf("*/*"))
+                }) { Icon(Icons.Rounded.Add, "Adicionar arquivo") }
+                IconButton(onClick = ::showAddFolderDialog) { Icon(Icons.Rounded.CreateNewFolder, "Nova pasta") }
+            }
+            if (pathLabel.isNotBlank()) {
+                Text(pathLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp))
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it; applyFilter(it) },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                placeholder = { Text("Pesquisar nome ou conteúdo") },
+                singleLine = true,
+                trailingIcon = { IconButton(onClick = { requestRecursiveSearch(query) }) { Icon(Icons.Rounded.Search, "Pesquisar") } }
+            )
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!loading && visibleItems.isEmpty()) {
+                Text(emptyMessage.ifBlank { "Nenhum arquivo" }, Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(visibleItems, key = { it.entryName + it.kind.name }) { item ->
+                    val actionVisible = item.kind != ItemKind.BACK && !item.isDirectory
+                    UnifiedFileRow(
+                        name = item.displayName,
+                        detail = item.detail,
+                        kind = when (item.kind) {
+                            ItemKind.BACK -> FileVisualKind.PARENT
+                            ItemKind.FOLDER -> FileVisualKind.FOLDER
+                            ItemKind.MANIFEST, ItemKind.XML -> FileVisualKind.XML
+                            ItemKind.DEX -> FileVisualKind.DEX
+                            ItemKind.TEXT -> classifyFile(item.displayName)
+                            ItemKind.BINARY -> classifyFile(item.displayName)
+                        },
+                        modified = item.modified,
+                        onReplace = if (actionVisible) ({ replaceArchiveItem(item) }) else null,
+                        onExport = if (actionVisible) ({ exportItem(item) }) else null,
+                        onDelete = if (item.kind != ItemKind.BACK) ({ requestDelete(item) }) else null,
+                        onClick = { openItem(item) }
+                    )
+                    HorizontalDivider(Modifier.padding(start = 68.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+        }
     }
 
     private fun host(): FullEditActivity = requireActivity() as FullEditActivity
@@ -186,8 +231,8 @@ class FilesFragment : Fragment() {
     private fun loadFiles() {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
-        emptyView.visibility = View.GONE
+        loading = true
+        emptyMessage = ""
 
         viewLifecycleOwner.lifecycleScope.launch {
             val items = runCatching {
@@ -201,18 +246,15 @@ class FilesFragment : Fragment() {
             }.getOrElse { error ->
                 allItems = emptyList()
                 visibleItems = emptyList()
-                progressBar.visibility = View.GONE
-                emptyView.visibility = View.VISIBLE
-                emptyView.text = error.message ?: getString(R.string.failed)
-                (listView.adapter as BaseAdapter).notifyDataSetChanged()
+                loading = false
+                emptyMessage = error.message ?: getString(R.string.failed)
                 return@launch
             }
 
             allItems = items
-            progressBar.visibility = View.GONE
-            pathView.text = buildCurrentPathLabel()
-            pathView.isVisible = pathView.text.isNotBlank()
-            applyFilter(keywordEdit.text.toString())
+            loading = false
+            pathLabel = buildCurrentPathLabel()
+            applyFilter(query)
         }
     }
 
@@ -372,8 +414,7 @@ class FilesFragment : Fragment() {
                     item.detail.contains(normalizedQuery, ignoreCase = true)
             }
         }
-        emptyView.text = getString(R.string.not_found)
-        (listView.adapter as BaseAdapter).notifyDataSetChanged()
+        emptyMessage = getString(R.string.not_found)
     }
 
     private fun openItem(item: BrowserItem) {
@@ -404,7 +445,13 @@ class FilesFragment : Fragment() {
                 loadFiles()
             }
 
-            item.kind == ItemKind.DEX -> enterSmaliWorkspace(item.entryName)
+            item.kind == ItemKind.DEX -> {
+                if (AppSettings.prefs(requireContext()).getBoolean(AppSettings.SMALI_EDITING, true)) {
+                    enterSmaliWorkspace(item.entryName)
+                } else {
+                    Toast.makeText(requireContext(), "A edição Smali está desativada nas configurações", Toast.LENGTH_LONG).show()
+                }
+            }
 
             item.kind == ItemKind.MANIFEST -> openManifestEditor()
 
@@ -421,7 +468,7 @@ class FilesFragment : Fragment() {
     private fun enterSmaliWorkspace(dexEntryName: String) {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val workspace = runCatching {
@@ -429,7 +476,7 @@ class FilesFragment : Fragment() {
                     FullEditRepository.prepareDexSmaliWorkspace(context, apkPath, dexEntryName)
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -447,7 +494,7 @@ class FilesFragment : Fragment() {
     private fun openManifestEditor() {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val manifestFile = runCatching {
@@ -455,7 +502,7 @@ class FilesFragment : Fragment() {
                     FullEditWorkspaceManager.getManifestFile(context, apkPath)
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -464,7 +511,7 @@ class FilesFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             pendingEditorTarget = EditorTarget(
                 modifiedEntryName = FullEditRepository.MANIFEST_ENTRY,
                 editorFile = manifestFile,
@@ -487,7 +534,7 @@ class FilesFragment : Fragment() {
 
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val editorFile = runCatching {
@@ -496,7 +543,7 @@ class FilesFragment : Fragment() {
                         ?: FullEditRepository.extractEntryForEditing(context, apkPath, item.entryName)
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -505,7 +552,7 @@ class FilesFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             pendingEditorTarget = EditorTarget(
                 modifiedEntryName = item.entryName,
                 editorFile = editorFile,
@@ -564,7 +611,7 @@ class FilesFragment : Fragment() {
 
     private fun replaceEntry(target: ReplacementTarget, uri: Uri) {
         val context = requireContext().applicationContext
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val result = runCatching {
@@ -580,7 +627,7 @@ class FilesFragment : Fragment() {
                         } ?: error("Failed to read selected file")
                         target.workspace.rootDir
                     } else {
-                        val replaceDir = File(context.cacheDir, "full_edit_replace").apply { mkdirs() }
+                        val replaceDir = AppSettings.workspaceRoot(context, "full_edit_replace")
                         val outputFile = File(replaceDir, target.displayName)
                         context.contentResolver.openInputStream(uri)?.use { input ->
                             outputFile.outputStream().use { output -> input.copyTo(output) }
@@ -589,7 +636,7 @@ class FilesFragment : Fragment() {
                     }
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -598,10 +645,63 @@ class FilesFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             host().registerModifiedEntry(target.modifiedEntryName, result)
             Toast.makeText(requireContext(), getString(R.string.file_replaced), Toast.LENGTH_SHORT).show()
             loadFiles()
+        }
+    }
+
+    private fun requestRecursiveSearch(query: String) {
+        val needle = query.trim()
+        if (needle.isEmpty() || currentSmaliWorkspace != null) {
+            applyFilter(needle)
+            return
+        }
+        when (AppSettings.prefs(requireContext()).getString(AppSettings.DECODE_MODE, "ask")) {
+            "all" -> searchRecursively(needle, searchContent = true)
+            "partial" -> searchRecursively(needle, searchContent = false)
+            else -> AlertDialog.Builder(requireContext())
+                .setTitle("Pesquisa no APK")
+                .setMessage("Pesquisar também dentro dos arquivos de texto? Isso pode levar mais tempo.")
+                .setNegativeButton("Somente nomes") { _, _ -> searchRecursively(needle, false) }
+                .setPositiveButton("Nome e conteúdo") { _, _ -> searchRecursively(needle, true) }
+                .show()
+        }
+    }
+
+    private fun searchRecursively(query: String, searchContent: Boolean) {
+        val needle = query.trim()
+        if (needle.isEmpty() || currentSmaliWorkspace != null) {
+            applyFilter(needle)
+            return
+        }
+        loading = true
+        viewLifecycleOwner.lifecycleScope.launch {
+            val results = runCatching {
+                withContext(Dispatchers.IO) {
+                    FullEditRepository.searchArchive(apkPath(), needle, searchContent).map { item ->
+                        val kind = resolveArchiveKind(item)
+                        BrowserItem(
+                            entryName = item.entryName,
+                            displayName = item.displayName,
+                            detail = item.entryName,
+                            isDirectory = false,
+                            kind = kind,
+                            modified = host().isEntryModified(item.entryName)
+                        )
+                    }
+                }
+            }.getOrElse { error ->
+                Toast.makeText(requireContext(), error.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show()
+                emptyList()
+            }
+            currentArchivePath = ""
+            allItems = results
+            visibleItems = results
+            pathLabel = if (searchContent) "Resultados em nome e conteúdo" else "Resultados por nome"
+            loading = false
+            emptyMessage = getString(R.string.not_found)
         }
     }
 
@@ -628,7 +728,7 @@ class FilesFragment : Fragment() {
             ).show()
             return
         }
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val registeredChange = runCatching {
@@ -655,7 +755,7 @@ class FilesFragment : Fragment() {
                     }
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -665,7 +765,7 @@ class FilesFragment : Fragment() {
             }
 
             host().registerModifiedEntry(registeredChange.first, registeredChange.second)
-            progressBar.visibility = View.GONE
+            loading = false
             Toast.makeText(
                 requireContext(),
                 getString(R.string.file_added, registeredChange.first),
@@ -858,14 +958,16 @@ class FilesFragment : Fragment() {
 
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val outputFile = runCatching {
                 withContext(Dispatchers.IO) {
                     val exportDir = context.getExternalFilesDir("full_edit_export") ?: context.filesDir
                     exportDir.mkdirs()
-                    val outputFile = uniqueTargetFile(exportDir, item.displayName)
+                    val overwrite = AppSettings.prefs(context)
+                        .getString(AppSettings.FILE_RENAME_MODE, "auto") == "overwrite"
+                    val outputFile = AppSettings.exportTarget(exportDir, item.displayName, overwrite)
 
                     val modifiedFile = when {
                         currentSmaliWorkspace != null -> {
@@ -898,7 +1000,7 @@ class FilesFragment : Fragment() {
                     outputFile
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -907,7 +1009,7 @@ class FilesFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             Toast.makeText(
                 requireContext(),
                 getString(R.string.save_succeed_1, outputFile.absolutePath),
@@ -916,86 +1018,4 @@ class FilesFragment : Fragment() {
         }
     }
 
-    private fun uniqueTargetFile(directory: File, fileName: String): File {
-        var candidate = File(directory, fileName)
-        if (!candidate.exists()) {
-            return candidate
-        }
-        val base = fileName.substringBeforeLast('.', fileName)
-        val extension = fileName.substringAfterLast('.', "")
-        var index = 1
-        while (candidate.exists()) {
-            val suffix = "_$index"
-            val nextName = if (extension.isBlank() || extension == fileName) {
-                base + suffix
-            } else {
-                "$base$suffix.$extension"
-            }
-            candidate = File(directory, nextName)
-            index += 1
-        }
-        return candidate
-    }
-
-    private inner class FilesAdapter : BaseAdapter() {
-        override fun getCount(): Int = visibleItems.size
-
-        override fun getItem(position: Int): Any = visibleItems[position]
-
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val rowView = convertView
-                ?: layoutInflater.inflate(R.layout.item_zipfile, parent, false)
-            val item = visibleItems[position]
-
-            rowView.findViewById<TextView>(R.id.filename).text = item.displayName
-
-            val detailView = rowView.findViewById<TextView>(R.id.detail1)
-            detailView.text = item.detail
-            detailView.visibility = if (item.detail.isBlank()) View.GONE else View.VISIBLE
-
-            rowView.findViewById<View>(R.id.selection_indicator).alpha =
-                if (item.modified) 1f else 0.24f
-
-            val iconBadge = rowView.findViewById<View>(R.id.file_icon_badge)
-            val icon = rowView.findViewById<ImageView>(R.id.file_icon)
-            val menuEdit = rowView.findViewById<View>(R.id.menu_edit)
-            val menuSave = rowView.findViewById<View>(R.id.menu_save)
-
-            val iconRes = when (item.kind) {
-                ItemKind.BACK -> R.drawable.ic_back
-                ItemKind.FOLDER -> R.drawable.ic_folder
-                ItemKind.MANIFEST, ItemKind.XML -> R.drawable.ic_edit_4
-                ItemKind.DEX -> R.drawable.ic_edit_3
-                ItemKind.TEXT -> R.drawable.ic_edit_2
-                ItemKind.BINARY -> R.drawable.ic_file_unknown
-            }
-            val badgeRes = when (item.kind) {
-                ItemKind.BACK,
-                ItemKind.FOLDER -> R.drawable.full_edit_badge_folder
-                ItemKind.MANIFEST -> R.drawable.full_edit_badge_manifest
-                ItemKind.DEX -> R.drawable.full_edit_badge_dex
-                ItemKind.XML,
-                ItemKind.TEXT,
-                ItemKind.BINARY -> R.drawable.full_edit_badge_generic
-            }
-
-            iconBadge.background = ContextCompat.getDrawable(requireContext(), badgeRes)
-            icon.setImageResource(iconRes)
-
-            val actionVisible = item.kind != ItemKind.BACK && !item.isDirectory
-            menuEdit.visibility = if (actionVisible) View.VISIBLE else View.INVISIBLE
-            menuSave.visibility = if (actionVisible) View.VISIBLE else View.INVISIBLE
-
-            rowView.setOnClickListener { openItem(item) }
-            rowView.setOnLongClickListener {
-                requestDelete(item)
-                true
-            }
-            menuEdit.setOnClickListener { replaceArchiveItem(item) }
-            menuSave.setOnClickListener { exportItem(item) }
-            return rowView
-        }
-    }
 }

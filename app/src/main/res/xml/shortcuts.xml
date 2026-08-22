@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="select_apk"
+        android:enabled="true"
+        android:icon="@drawable/ic_apk_shortcut"
+        android:shortcutShortLabel="@string/action_apk"
+        android:shortcutLongLabel="@string/action_apk_desc">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.saas.apkeditorplus"
+            android:targetClass="com.saas.apkeditorplus.MainActivity"
+            android:data="apkeditorplus://select-apk" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="installed_apps"
+        android:enabled="true"
+        android:icon="@drawable/ic_app_shortcut"
+        android:shortcutShortLabel="@string/action_app"
+        android:shortcutLongLabel="@string/action_app_desc">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.saas.apkeditorplus"
+            android:targetClass="com.saas.apkeditorplus.MainActivity"
+            android:data="apkeditorplus://installed-apps" />
+    </shortcut>
+</shortcuts>

@@ -1,191 +1,225 @@
 package com.saas.apkeditorplus
 
-import android.content.pm.PackageManager
-import android.graphics.drawable.Drawable
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.View
-import android.widget.*
-import com.saas.apkeditorplus.engine.axml.AxmlReader
-import com.saas.apkeditorplus.engine.axml.AxmlWriter
-import com.saas.apkeditorplus.engine.axml.ManifestInfo
+import android.widget.Toast
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
+import androidx.lifecycle.lifecycleScope
+import com.saas.apkeditorplus.full.FullEditRepository
+import com.saas.apkeditorplus.ui.common.CommonEditScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
-import java.io.FileInputStream
 import java.util.zip.ZipFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-class CommonEditActivity : BaseActivity(), View.OnClickListener {
-
+class CommonEditActivity : BaseActivity() {
     private lateinit var apkPath: String
-    private var manifestInfo: ManifestInfo? = null
-    
-    // UI Components
-    private lateinit var ivLauncherIcon: ImageView
-    private lateinit var etAppName: EditText
-    private lateinit var etPkgName: EditText
-    private lateinit var etVerCode: EditText
-    private lateinit var etVerName: EditText
-    private lateinit var etMinSdk: EditText
-    private lateinit var etTargetSdk: EditText
-    private lateinit var etMaxSdk: EditText
-    private lateinit var spLocation: Spinner
-    private lateinit var btnSave: Button
-    private lateinit var btnClose: Button
+    private var snapshot: CommonEditEngine.Snapshot? = null
+    private var replacementIconFile: File? = null
+    private var launcherIconEntries: List<String> = emptyList()
+    private var form by mutableStateOf(CommonEditForm())
+    private var icon by mutableStateOf<ImageBitmap?>(null)
+    private var loading by mutableStateOf(true)
+    private var saving by mutableStateOf(false)
 
-    private val handler = Handler(Looper.getMainLooper())
+    private val iconPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(::importLauncherIcon)
+    }
+
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_commonedit)
-
-        apkPath = intent.getStringExtra("apkPath") ?: ""
-        if (apkPath.isEmpty()) {
+        supportActionBar?.hide()
+        apkPath = intent.getStringExtra("apkPath").orEmpty()
+        if (apkPath.isBlank() || !File(apkPath).isFile) {
             Toast.makeText(this, getString(R.string.apk_path_not_found), Toast.LENGTH_SHORT).show()
             finish()
             return
         }
-
-        initViews()
+        setContent {
+            ApkEditorTheme {
+                CommonEditScreen(
+                    title = snapshot?.appLabel ?: File(apkPath).nameWithoutExtension,
+                    form = form,
+                    icon = icon,
+                    loading = loading,
+                    saving = saving,
+                    onFormChange = { form = it },
+                    onPickIcon = { iconPicker.launch(arrayOf("image/png", "image/webp", "image/jpeg")) },
+                    onClose = ::finish,
+                    onSave = ::saveChanges
+                )
+            }
+        }
         loadApkInfo()
     }
 
-    private fun initViews() {
-        ivLauncherIcon = findViewById(R.id.launcher_icon)
-        etAppName = findViewById(R.id.et_appname)
-        etPkgName = findViewById(R.id.et_pkgname)
-        etVerCode = findViewById(R.id.et_vercode)
-        etVerName = findViewById(R.id.et_vername)
-        etMinSdk = findViewById(R.id.et_minSdkVersion)
-        etTargetSdk = findViewById(R.id.et_targetSdkVersion)
-        etMaxSdk = findViewById(R.id.et_maxSdkVersion)
-        spLocation = findViewById(R.id.location_spinner)
-        btnSave = findViewById(R.id.btn_save)
-        btnClose = findViewById(R.id.btn_close)
-
-        btnSave.setOnClickListener(this)
-        btnClose.setOnClickListener(this)
-        
-        // Setup Spinner
-        val locations = arrayOf("Auto", "Internal", "External", "Preference")
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, locations)
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        spLocation.adapter = adapter
-    }
-
     private fun loadApkInfo() {
-        Thread {
-            try {
-                val file = File(apkPath)
-                val zipFile = ZipFile(file)
-                val entry = zipFile.getEntry("AndroidManifest.xml")
-                val inputStream = zipFile.getInputStream(entry)
-                
-                val reader = AxmlReader(inputStream)
-                manifestInfo = reader.parse()
-                
-                zipFile.close()
-
-                handler.post { updateUI() }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                handler.post {
-                    Toast.makeText(this, getString(R.string.error_loading_apk_info, e.message), Toast.LENGTH_LONG).show()
+        lifecycleScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { CommonEditEngine.read(File(apkPath)) } }
+                .getOrElse { error ->
+                    Toast.makeText(this@CommonEditActivity, getString(R.string.error_loading_apk_info, error.message), Toast.LENGTH_LONG).show()
+                    finish()
+                    return@launch
+                }
+            snapshot = result
+            form = CommonEditForm(
+                appName = result.appLabel.orEmpty(),
+                packageName = result.packageName,
+                versionCode = result.versionCode.toString(),
+                versionName = result.versionName,
+                minSdk = result.minSdk?.toString().orEmpty(),
+                targetSdk = result.targetSdk?.toString().orEmpty(),
+                maxSdk = result.maxSdk?.toString().orEmpty(),
+                installLocation = result.installLocation,
+                renameResources = true,
+                renameDex = false
+            )
+            runCatching {
+                packageManager.getPackageArchiveInfo(apkPath, 0)?.applicationInfo?.let { appInfo ->
+                    appInfo.sourceDir = apkPath
+                    appInfo.publicSourceDir = apkPath
+                    icon = appInfo.loadIcon(packageManager).toBitmap(192, 192).asImageBitmap()
+                    if (form.appName.isBlank()) form = form.copy(appName = appInfo.loadLabel(packageManager).toString())
                 }
             }
-        }.start()
-    }
-
-    private fun updateUI() {
-        manifestInfo?.let { info ->
-            supportActionBar?.title = info.label ?: getString(R.string.unnamed)
-            etAppName.setText(info.label)
-            etPkgName.setText(info.packageName)
-            etVerCode.setText(info.versionCode.toString())
-            etVerName.setText(info.versionName)
-            etMinSdk.setText(if (info.minSdkVersion != -1) info.minSdkVersion.toString() else "")
-            etTargetSdk.setText(if (info.targetSdkVersion != -1) info.targetSdkVersion.toString() else "")
-            etMaxSdk.setText(if (info.maxSdkVersion != -1) info.maxSdkVersion.toString() else "")
-            
-            if (info.installLocation >= 0 && info.installLocation < spLocation.adapter.count) {
-                spLocation.setSelection(info.installLocation)
+            launcherIconEntries = withContext(Dispatchers.IO) {
+                CommonEditEngine.findLauncherIconEntries(File(apkPath))
             }
- 
-            // Load icon
-            try {
-                val pm = packageManager
-                val packageInfo = pm.getPackageArchiveInfo(apkPath, 0)
-                if (packageInfo != null) {
-                    val appInfo = packageInfo.applicationInfo
-                    appInfo?.let {
-                        it.sourceDir = apkPath
-                        it.publicSourceDir = apkPath
-                        
-                        val icon = it.loadIcon(pm)
-                        val label = it.loadLabel(pm).toString()
-                        
-                        ivLauncherIcon.setImageDrawable(icon)
-                        
-                        if (manifestInfo?.label.isNullOrEmpty()) {
-                            supportActionBar?.title = label
-                            etAppName.setText(label)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            loading = false
         }
     }
 
-    override fun onClick(v: View) {
-        when (v.id) {
-            R.id.btn_close -> finish()
-            R.id.btn_save -> saveChanges()
-        }
+    private fun importLauncherIcon(uri: Uri) {
+        val target = File(cacheDir, "common_edit/launcher_replacement.png")
+        runCatching {
+            target.parentFile?.mkdirs()
+            contentResolver.openInputStream(uri)?.use { input -> target.outputStream().use(input::copyTo) }
+                ?: error("Não foi possível ler a imagem")
+            require(target.length() > 0L) { "A imagem selecionada está vazia" }
+            val bitmap = BitmapFactory.decodeFile(target.absolutePath) ?: error("Formato de imagem inválido")
+            replacementIconFile = target
+            icon = bitmap.asImageBitmap()
+        }.onFailure { Toast.makeText(this, it.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show() }
     }
 
     private fun saveChanges() {
-        val newLabel = etAppName.text.toString()
-        val newPkgName = etPkgName.text.toString()
-        val newVerCode = etVerCode.text.toString().toIntOrNull() ?: -1
-        
-        Toast.makeText(this, getString(R.string.saving_changes), Toast.LENGTH_SHORT).show()
-        
-        Thread {
-            try {
-                // In binary edit, we usually create a temp file and then rebuild the APK
-                val tempAxml = File(cacheDir, "AndroidManifest.xml")
-                val zipFile = ZipFile(apkPath)
-                val entry = zipFile.getEntry("AndroidManifest.xml")
-                val inputStream = zipFile.getInputStream(entry)
-                
-                val writer = AxmlWriter(inputStream, tempAxml.absolutePath)
-                manifestInfo?.let { writer.setManifestInfo(it) }
-                writer.setLabel(newLabel)
-                writer.setPackageName(newPkgName)
-                writer.setVersionName(etVerName.text.toString())
-                writer.setVersionCode(newVerCode)
-                writer.write()
-                
-                zipFile.close()
-                
-                handler.post {
-                    val modifiedFiles = Bundle()
-                    modifiedFiles.putString("AndroidManifest.xml", tempAxml.absolutePath)
-                    
-                    val intent = android.content.Intent(this, ApkCreateActivity::class.java).apply {
-                        putExtra("apkPath", apkPath)
-                        putExtra("modifiedFiles", modifiedFiles)
-                    }
-                    startActivity(intent)
-                    Toast.makeText(this, getString(R.string.axml_modified_rebuild), Toast.LENGTH_SHORT).show()
+        confirmRebuild(::performSaveChanges)
+    }
+
+    private fun performSaveChanges() {
+        val original = snapshot ?: return
+        val changes = runCatching {
+            CommonEditEngine.Changes(
+                packageName = form.packageName.trim(),
+                versionCode = form.versionCode.toInt(),
+                versionName = form.versionName,
+                appLabel = form.appName,
+                minSdk = form.minSdk.toIntOrNull(),
+                targetSdk = form.targetSdk.toIntOrNull(),
+                maxSdk = form.maxSdk.toIntOrNull(),
+                installLocation = form.installLocation,
+                renameResourcePackage = form.renameResources
+            )
+        }.getOrElse {
+            Toast.makeText(this, getString(R.string.invalid_ver_code), Toast.LENGTH_SHORT).show()
+            return
+        }
+        saving = true
+        lifecycleScope.launch {
+            val output = runCatching {
+                withContext(Dispatchers.IO) {
+                    val commonOutput = CommonEditEngine.apply(this@CommonEditActivity, File(apkPath), changes)
+                    val dexChanges = if (form.renameDex && original.packageName != changes.packageName) {
+                        prepareDexPackageRename(original.packageName, changes.packageName)
+                    } else emptyMap()
+                    commonOutput to dexChanges
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                handler.post {
-                    Toast.makeText(this, getString(R.string.error_saving, e.message), Toast.LENGTH_LONG).show()
+            }.getOrElse { error ->
+                saving = false
+                Toast.makeText(this@CommonEditActivity, getString(R.string.error_saving, error.message), Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            val modified = Bundle().apply {
+                putString("AndroidManifest.xml", output.first.manifestFile.absolutePath)
+                output.first.resourcesFile?.let { putString("resources.arsc", it.absolutePath) }
+                output.second.forEach { (name, workspace) -> putString(name, workspace.absolutePath) }
+                replacementIconFile?.let { image ->
+                    buildIconReplacements(image).forEach { (entry, file) -> putString(entry, file.absolutePath) }
                 }
             }
-        }.start()
+            startActivity(Intent(this@CommonEditActivity, ApkCreateActivity::class.java).apply {
+                putExtra("apkPath", apkPath)
+                putExtra("modifiedFiles", modified)
+            })
+            saving = false
+        }
+    }
+
+    private fun prepareDexPackageRename(oldPackage: String, newPackage: String): Map<String, File> {
+        require(oldPackage.isNotBlank() && newPackage.isNotBlank()) { "Nome de pacote inválido" }
+        val oldDescriptor = "L${oldPackage.replace('.', '/')}"
+        val newDescriptor = "L${newPackage.replace('.', '/')}"
+        val replacements = linkedMapOf<String, File>()
+        ZipFile(apkPath).use { zip ->
+            zip.entries().asSequence().map { it.name }.filter(FullEditRepository::isDexEntry).sorted().forEach { dexEntry ->
+                val workspace = FullEditRepository.prepareDexSmaliWorkspace(this, apkPath, dexEntry)
+                var changed = false
+                workspace.rootDir.walkTopDown().filter { it.isFile && it.extension.equals("smali", true) }.forEach { file ->
+                    val original = file.readText()
+                    val updated = original.replace(oldDescriptor, newDescriptor).replace(oldPackage, newPackage)
+                    if (updated != original) {
+                        file.writeText(updated)
+                        changed = true
+                    }
+                }
+                if (changed) replacements[dexEntry] = workspace.rootDir
+            }
+        }
+        return replacements
+    }
+
+    private fun buildIconReplacements(source: File): Map<String, File> {
+        val bitmap = BitmapFactory.decodeFile(source.absolutePath) ?: error("Ícone selecionado inválido")
+        val directory = File(cacheDir, "common_edit/icons").apply { mkdirs() }
+        return launcherIconEntries.associateWith { entryName ->
+            val extension = entryName.substringAfterLast('.', "png").lowercase()
+            val target = File(directory, entryName.replace('/', '_'))
+            val format = when (extension) {
+                "webp" -> if (android.os.Build.VERSION.SDK_INT >= 30) Bitmap.CompressFormat.WEBP_LOSSLESS else Bitmap.CompressFormat.WEBP
+                "jpg", "jpeg" -> Bitmap.CompressFormat.JPEG
+                else -> Bitmap.CompressFormat.PNG
+            }
+            target.outputStream().use { output ->
+                check(bitmap.compress(format, 100, output)) { "Falha ao converter ícone para $extension" }
+            }
+            target
+        }
     }
 }
+
+data class CommonEditForm(
+    val appName: String = "",
+    val packageName: String = "",
+    val versionCode: String = "",
+    val versionName: String = "",
+    val minSdk: String = "",
+    val targetSdk: String = "",
+    val maxSdk: String = "",
+    val installLocation: Int? = null,
+    val renameResources: Boolean = true,
+    val renameDex: Boolean = false
+)

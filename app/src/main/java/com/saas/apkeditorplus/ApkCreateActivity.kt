@@ -3,93 +3,186 @@ package com.saas.apkeditorplus
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.view.View
-import android.widget.Button
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.TextView
+import android.text.InputType
 import android.widget.Toast
+import android.widget.EditText
+import android.widget.FrameLayout
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.FileProvider
-import com.saas.apkeditorplus.full.FullEditRepository
-import com.saas.apkeditorplus.utils.AxmlEncoder
+import androidx.appcompat.app.AlertDialog
+import com.saas.apkeditorplus.ui.build.ApkBuildScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
-import java.io.FileOutputStream
-import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
-import java.util.zip.ZipOutputStream
 
 class ApkCreateActivity : BaseActivity() {
-
-    private lateinit var layoutGenerating: LinearLayout
-    private lateinit var layoutReinstall: LinearLayout
-    private lateinit var tvDetail: TextView
-    private lateinit var tvResult: TextView
-    private lateinit var btnInstall: Button
-    private lateinit var btnUninstall: Button
-    private lateinit var ivResult: ImageView
     private lateinit var apkPath: String
     private lateinit var modifiedFiles: Bundle
     private var deletedEntries: Set<String> = emptySet()
     private var outputApkFile: File? = null
     private var targetPackageName: String? = null
 
+    private var building by mutableStateOf(true)
+    private var buildSuccess by mutableStateOf<Boolean?>(null)
+    private var detail by mutableStateOf("")
+    private var canInstall by mutableStateOf(false)
+    private var canUninstall by mutableStateOf(false)
+    private var signingCredentials: SigningCredentials? = null
+
+    private data class SigningCredentials(
+        val file: File,
+        val storePassword: String,
+        val alias: String,
+        val keyPassword: String
+    )
+
+    override fun shouldHideActionBar(): Boolean = true
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_simpleedit_making)
-
-        layoutGenerating = findViewById(R.id.layout_apk_generating)
-        layoutReinstall = findViewById(R.id.layout_apk_reinstall)
-        tvDetail = findViewById(R.id.tv_detail)
-        tvResult = findViewById(R.id.result)
-        btnInstall = findViewById(R.id.button_reinstall)
-        btnUninstall = findViewById(R.id.button_uninstall)
-        ivResult = findViewById(R.id.result_image)
-
-        apkPath = intent.getStringExtra("apkPath") ?: ""
+        apkPath = intent.getStringExtra("apkPath").orEmpty()
         modifiedFiles = intent.getBundleExtra("modifiedFiles") ?: Bundle()
         deletedEntries = intent.getStringArrayListExtra("deletedEntries")?.toSet().orEmpty()
 
-        findViewById<Button>(R.id.button_close).setOnClickListener { finish() }
-        btnUninstall.setOnClickListener { uninstallOriginal() }
-        btnInstall.setOnClickListener { installNewApk() }
+        setContent {
+            ApkEditorTheme {
+                ApkBuildScreen(
+                    building = building,
+                    success = buildSuccess,
+                    detail = detail,
+                    canInstall = canInstall,
+                    canUninstall = canUninstall,
+                    onInstall = ::installNewApk,
+                    onUninstall = ::uninstallOriginal,
+                    onClose = ::finish
+                )
+            }
+        }
+        if (apkPath.isBlank()) {
+            showResult(false, getString(R.string.apk_path_not_found))
+            return
+        }
+        targetPackageName = runCatching { packageManager.getPackageArchiveInfo(apkPath, 0)?.packageName }.getOrNull()
+        prepareSigningAndBuild()
+    }
 
-        extractPackageName()
+    private fun prepareSigningAndBuild() {
+        if (prefs.getString(AppSettings.DEFAULT_SIGNER, "testkey") != "ask") {
+            useTestKeyAndBuild()
+            return
+        }
+        detail = "Selecione a chave usada para assinar"
+        AlertDialog.Builder(this)
+            .setTitle("Chave de reconstrução")
+            .setItems(arrayOf("Chave de teste", "Chave personalizada")) { _, index ->
+                if (index == 0) useTestKeyAndBuild() else chooseCustomKeyStore()
+            }
+            .setOnCancelListener { finish() }
+            .show()
+    }
+
+    private fun useTestKeyAndBuild() {
+        signingCredentials = SigningCredentials(
+            KeyStoreManager(this).getTestKey(), "testkey", "testkey", "testkey"
+        )
         startBuildProcess()
     }
 
-    private fun extractPackageName() {
-        try {
-            val info = packageManager.getPackageArchiveInfo(apkPath, 0)
-            targetPackageName = info?.packageName
-        } catch (e: Exception) {
-            e.printStackTrace()
+    private fun chooseCustomKeyStore() {
+        val stores = KeyStoreManager(this).listKeyStores().filterNot { it.name == "testkey.jks" }
+        if (stores.isEmpty()) {
+            Toast.makeText(this, "Crie ou importe uma chave primeiro.", Toast.LENGTH_LONG).show()
+            finish()
+            return
         }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.select_keystore)
+            .setItems(stores.map(File::getName).toTypedArray()) { _, index ->
+                requestStorePassword(stores[index])
+            }
+            .setOnCancelListener { finish() }
+            .show()
     }
 
-    private fun isAppInstalled(packageName: String): Boolean {
-        return try {
-            packageManager.getPackageInfo(packageName, 0)
-            true
-        } catch (e: Exception) {
-            false
-        }
+    private fun requestStorePassword(keyStore: File) {
+        val input = passwordInput()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.password)
+            .setView(FrameLayout(this).apply { addView(input) })
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val password = input.text.toString()
+                val aliases = runCatching {
+                    KeyStoreManager(this).inspectKeyStore(keyStore, password.toCharArray())
+                }.getOrElse {
+                    Toast.makeText(this, it.message ?: "Senha inválida", Toast.LENGTH_LONG).show()
+                    finish()
+                    return@setPositiveButton
+                }
+                if (aliases.size == 1) requestKeyPassword(keyStore, password, aliases.first().alias)
+                else if (aliases.isNotEmpty()) AlertDialog.Builder(this)
+                    .setTitle("Selecione o alias")
+                    .setItems(aliases.map { it.alias }.toTypedArray()) { _, index ->
+                        requestKeyPassword(keyStore, password, aliases[index].alias)
+                    }.show()
+                else {
+                    Toast.makeText(this, "Nenhuma chave privada encontrada.", Toast.LENGTH_LONG).show()
+                    finish()
+                }
+            }
+            .setNegativeButton(R.string.colormixer_cancel) { _, _ -> finish() }
+            .show()
     }
+
+    private fun requestKeyPassword(keyStore: File, storePassword: String, alias: String) {
+        val input = passwordInput().apply { setText(storePassword); selectAll() }
+        AlertDialog.Builder(this)
+            .setTitle("Senha da chave: $alias")
+            .setView(input)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                signingCredentials = SigningCredentials(keyStore, storePassword, alias, input.text.toString())
+                startBuildProcess()
+            }
+            .setNegativeButton(R.string.colormixer_cancel) { _, _ -> finish() }
+            .show()
+    }
+
+    private fun passwordInput() = EditText(this).apply {
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        setPadding(50, 20, 50, 20)
+    }
+
+    private fun isAppInstalled(packageName: String): Boolean =
+        runCatching { packageManager.getPackageInfo(packageName, 0) }.isSuccess
 
     private fun startBuildProcess() {
-        layoutGenerating.visibility = View.VISIBLE
-        layoutReinstall.visibility = View.GONE
-
+        building = true
         Thread {
             try {
                 updateProgress(getString(R.string.rebuilding_apk))
                 val unsignedApk = File(cacheDir, "unsigned.apk")
-                rebuildApk(unsignedApk)
+                val replacements = modifiedFiles.keySet().associateWith { File(modifiedFiles.getString(it).orEmpty()) }
+                ApkBuildPipeline.rebuild(
+                    context = this,
+                    sourceApk = File(apkPath),
+                    outputApk = unsignedApk,
+                    changes = ApkBuildPipeline.ChangeSet(replacements, deletedEntries),
+                    onProgress = ::updateProgress
+                )
+                targetPackageName = packageManager.getPackageArchiveInfo(unsignedApk.absolutePath, 0)?.packageName
+                    ?: targetPackageName
 
                 updateProgress(getString(R.string.signing_apk))
                 val outputDir = getExternalFilesDir(null) ?: filesDir
-                val signedApk = File(outputDir, "${targetPackageName ?: "modded"}_pro.apk")
-                val success = signWithDefaultOrFirstKey(unsignedApk, signedApk)
-
+                val pattern = prefs.getString("output_apk_name", "{package}_mod.apk") ?: "{package}_mod.apk"
+                val safePackage = (targetPackageName ?: "modded").replace(Regex("[^A-Za-z0-9._-]"), "_")
+                val outputName = pattern.replace("{package}", safePackage)
+                    .replace(Regex("[\\/:*?\"<>|]"), "_")
+                    .let { if (it.endsWith(".apk", true)) it else "$it.apk" }
+                val overwrite = prefs.getString(AppSettings.FILE_RENAME_MODE, "auto") == "overwrite"
+                val signedApk = AppSettings.exportTarget(outputDir, outputName, overwrite)
+                val success = signWithDefaultKey(unsignedApk, signedApk)
                 runOnUiThread {
                     if (success) {
                         outputApkFile = signedApk
@@ -98,267 +191,76 @@ class ApkCreateActivity : BaseActivity() {
                         showResult(false, getString(R.string.signing_failed_check_keys))
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                runOnUiThread {
-                    showResult(false, getString(R.string.error_during_build, e.message))
-                }
+            } catch (error: Exception) {
+                runOnUiThread { showResult(false, getString(R.string.error_during_build, error.message)) }
             }
         }.start()
     }
 
-    private fun signWithDefaultOrFirstKey(input: File, output: File): Boolean {
-        return try {
-            output.parentFile?.mkdirs()
-            if (output.exists()) {
-                output.delete()
+    private fun signWithDefaultKey(input: File, output: File): Boolean = runCatching {
+        output.parentFile?.mkdirs()
+        if (output.exists()) output.delete()
+        val credentials = signingCredentials ?: error("Chave de assinatura não selecionada")
+        ApkSignerManager().signApk(
+            inputApk = input,
+            outputApk = output,
+            keyStoreFile = credentials.file,
+            keyStorePassword = credentials.storePassword.toCharArray(),
+            keyAlias = credentials.alias,
+            keyPassword = credentials.keyPassword.toCharArray(),
+            enableV1 = prefs.getBoolean("sign_v1", true),
+            enableV2 = prefs.getBoolean("sign_v2", true),
+            enableV3 = prefs.getBoolean("sign_v3", true),
+            enableV4 = prefs.getBoolean(AppSettings.SIGN_V4, false),
+            listener = object : ApkSignerManager.SignerListener {
+                override fun onStart() = Unit
+                override fun onProgress(message: String) = updateProgress(message)
+                override fun onSuccess() = Unit
+                override fun onError(message: String) = Unit
             }
+        ) && output.exists() && output.length() > 0L
+    }.getOrDefault(false)
 
-            val keyStoreFile = KeyStoreManager(this).getTestKey()
-            ApkSignerManager().signApk(
-                inputApk = input,
-                outputApk = output,
-                keyStoreFile = keyStoreFile,
-                keyStorePassword = "testkey".toCharArray(),
-                keyAlias = "testkey",
-                keyPassword = "testkey".toCharArray(),
-                listener = object : ApkSignerManager.SignerListener {
-                    override fun onStart() = Unit
-
-                    override fun onProgress(message: String) {
-                        updateProgress(message)
-                    }
-
-                    override fun onSuccess() = Unit
-
-                    override fun onError(message: String) = Unit
-                }
-            ) && output.exists() && output.length() > 0L
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
-    }
-
-    private fun rebuildApk(outputFile: File) {
-        ZipFile(apkPath).use { zipFile ->
-            ZipOutputStream(FileOutputStream(outputFile)).use { zos ->
-                val compiledDexFiles = linkedMapOf<String, File>()
-                val writtenEntries = linkedSetOf<String>()
-                val entries = zipFile.entries()
-
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-
-                    if (isDeletedEntry(entry.name)) {
-                        continue
-                    }
-
-                    if (entry.name.startsWith("META-INF/") &&
-                        (entry.name.endsWith(".SF") ||
-                            entry.name.endsWith(".RSA") ||
-                            entry.name.endsWith(".MF"))
-                    ) {
-                        continue
-                    }
-
-                    writtenEntries.add(entry.name)
-                    zos.putNextEntry(ZipEntry(entry.name))
-
-                    val modifiedPath = modifiedFiles.getString(entry.name)
-                    if (modifiedPath != null) {
-                        val modifiedFile = File(modifiedPath)
-                        writeModifiedEntry(entry.name, modifiedFile, zos, compiledDexFiles)
-                    } else {
-                        zipFile.getInputStream(entry).use { it.copyTo(zos) }
-                    }
-
-                    zos.closeEntry()
-                }
-
-                modifiedFiles.keySet()
-                    .asSequence()
-                    .filterNot(writtenEntries::contains)
-                    .filterNot(::isDeletedEntry)
-                    .sorted()
-                    .forEach { entryName ->
-                        require(isSafeArchiveEntry(entryName)) { "Invalid archive entry: $entryName" }
-                        val modifiedFile = File(modifiedFiles.getString(entryName).orEmpty())
-                        require(modifiedFile.exists()) { "Modified file not found: $entryName" }
-
-                        val normalizedName = if (modifiedFile.isDirectory && !entryName.endsWith('/')) {
-                            "$entryName/"
-                        } else {
-                            entryName
-                        }
-                        zos.putNextEntry(ZipEntry(normalizedName))
-                        if (modifiedFile.isFile) {
-                            writeModifiedEntry(normalizedName, modifiedFile, zos, compiledDexFiles)
-                        }
-                        zos.closeEntry()
-                    }
-            }
-        }
-    }
-
-    private fun writeModifiedEntry(
-        entryName: String,
-        modifiedFile: File,
-        zos: ZipOutputStream,
-        compiledDexFiles: MutableMap<String, File>
-    ) {
-        if (FullEditRepository.isDexEntry(entryName) && modifiedFile.isDirectory) {
-            val compiledDex = compiledDexFiles.getOrPut(entryName) {
-                updateProgress("${getString(R.string.rebuilding_apk)} ($entryName)")
-                FullEditRepository.compileSmaliWorkspaceToDex(
-                    context = this,
-                    apkPath = apkPath,
-                    dexEntryName = entryName,
-                    smaliDir = modifiedFile
-                )
-            }
-            compiledDex.inputStream().use { it.copyTo(zos) }
-        } else if (isAxmlFile(entryName)) {
-            if (isBinaryAxml(modifiedFile)) {
-                modifiedFile.inputStream().use { it.copyTo(zos) }
-            } else {
-                val binaryData = AxmlEncoder().encode(modifiedFile.readText(), this)
-                if (binaryData != null) {
-                    zos.write(binaryData as ByteArray)
-                } else {
-                    modifiedFile.inputStream().use { it.copyTo(zos) }
-                }
-            }
-        } else {
-            modifiedFile.inputStream().use { it.copyTo(zos) }
-        }
-    }
-
-    private fun isDeletedEntry(entryName: String): Boolean {
-        return deletedEntries.any { deleted ->
-            entryName == deleted || (deleted.endsWith('/') && entryName.startsWith(deleted))
-        }
-    }
-
-    private fun isSafeArchiveEntry(entryName: String): Boolean {
-        return entryName.isNotBlank() &&
-            !entryName.startsWith('/') &&
-            !entryName.startsWith('\\') &&
-            entryName.split('/', '\\').none { it == ".." }
-    }
-
-    private fun isAxmlFile(name: String): Boolean {
-        return name == "AndroidManifest.xml" || (name.startsWith("res/") && name.endsWith(".xml"))
-    }
-
-    private fun isBinaryAxml(file: File): Boolean {
-        return try {
-            file.inputStream().use { input ->
-                val header = ByteArray(4)
-                val read = input.read(header)
-                if (read == 4) {
-                    val magic = (header[0].toInt() and 0xFF) or
-                        ((header[1].toInt() and 0xFF) shl 8) or
-                        ((header[2].toInt() and 0xFF) shl 16) or
-                        ((header[3].toInt() and 0xFF) shl 24)
-                    magic == 0x00080003
-                } else {
-                    false
-                }
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun updateProgress(message: String) {
-        runOnUiThread { tvDetail.text = message }
-    }
+    private fun updateProgress(message: String) = runOnUiThread { detail = message }
 
     private fun showResult(success: Boolean, message: String) {
-        layoutGenerating.visibility = View.GONE
-        layoutReinstall.visibility = View.VISIBLE
-
-        if (success) {
-            ivResult.setImageResource(R.drawable.ic_select)
-            btnInstall.visibility = View.VISIBLE
-
-            val resultText = getString(R.string.carlos) +
-                String.format(getString(R.string.apk_savedas_1), outputApkFile?.absolutePath ?: "") +
-                "\n\n"
-
-            targetPackageName?.let { pkg ->
-                if (isAppInstalled(pkg)) {
-                    val removeTip = getString(R.string.remove_tip)
-                    val spannable = android.text.SpannableStringBuilder(resultText + removeTip)
-                    val start = resultText.length
-                    val end = spannable.length
-
-                    spannable.setSpan(
-                        android.text.style.AbsoluteSizeSpan(12, true),
-                        start,
-                        end,
-                        android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
-                    spannable.setSpan(
-                        android.text.style.ForegroundColorSpan(android.graphics.Color.DKGRAY),
-                        start,
-                        end,
-                        android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                    )
-
-                    tvResult.text = spannable
-                    btnUninstall.visibility = View.VISIBLE
-                } else {
-                    tvResult.text = resultText
-                    btnUninstall.visibility = View.GONE
-                }
-            } ?: run {
-                tvResult.text = resultText
-                btnUninstall.visibility = View.GONE
+        building = false
+        buildSuccess = success
+        canInstall = success && outputApkFile?.isFile == true
+        canUninstall = success && targetPackageName?.let(::isAppInstalled) == true
+        detail = if (success) {
+            buildString {
+                append(getString(R.string.carlos))
+                append(String.format(getString(R.string.apk_savedas_1), outputApkFile?.absolutePath.orEmpty()))
+                if (canUninstall) append("\n\n").append(getString(R.string.remove_tip))
             }
-        } else {
-            ivResult.setImageResource(R.drawable.ic_close)
-            tvResult.text = message
-            btnInstall.visibility = View.GONE
-            btnUninstall.visibility = View.GONE
-        }
+        } else message
     }
 
     private fun uninstallOriginal() {
-        targetPackageName?.let { pkg ->
-            startActivity(
-                Intent(Intent.ACTION_DELETE).apply {
-                    data = Uri.parse("package:$pkg")
-                }
-            )
-        } ?: Toast.makeText(this, getString(R.string.package_name_not_identified), Toast.LENGTH_SHORT)
-            .show()
+        val pkg = targetPackageName
+        if (pkg == null) {
+            Toast.makeText(this, R.string.package_name_not_identified, Toast.LENGTH_SHORT).show()
+        } else {
+            startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")))
+        }
     }
 
     private fun installNewApk() {
-        outputApkFile?.let { file ->
-            if (!file.exists()) {
-                Toast.makeText(this, getString(R.string.failed), Toast.LENGTH_SHORT).show()
-                return
-            }
-
-            val installDir = getExternalFilesDir("apk") ?: getExternalFilesDir(null) ?: cacheDir
-            if (!installDir.exists()) {
-                installDir.mkdirs()
-            }
-
-            val installFile = File(installDir, "gen.apk")
-            file.copyTo(installFile, overwrite = true)
-
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", installFile)
-            val intent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
+        val file = outputApkFile?.takeIf { it.isFile }
+        if (file == null) {
+            Toast.makeText(this, R.string.failed, Toast.LENGTH_SHORT).show()
+            return
         }
+        val installDir = getExternalFilesDir("apk") ?: getExternalFilesDir(null) ?: cacheDir
+        installDir.mkdirs()
+        val installFile = File(installDir, "gen.apk")
+        file.copyTo(installFile, overwrite = true)
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", installFile)
+        startActivity(Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+            putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 }

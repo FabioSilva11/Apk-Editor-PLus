@@ -1,22 +1,16 @@
 package com.saas.apkeditorplus
 
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
-import android.view.View
-import android.widget.Button
-import android.widget.ProgressBar
-import android.widget.TextView
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.saas.apkeditorplus.ui.signing.SigningProgressScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
 
 class SigningProgressActivity : BaseActivity() {
-
-    private lateinit var tvTitle: TextView
-    private lateinit var tvStatus: TextView
-    private lateinit var progressBar: ProgressBar
-    private lateinit var layoutButtons: View
-    private lateinit var btnViewOutput: Button
-    private lateinit var btnFinish: Button
 
     private var inputPath: String? = null
     private var outputPath: String? = null
@@ -24,18 +18,15 @@ class SigningProgressActivity : BaseActivity() {
     private var ksPass: String? = null
     private var alias: String? = null
     private var keyPass: String? = null
+    private var status by mutableStateOf("")
+    private var finished by mutableStateOf(false)
+    private var failed by mutableStateOf(false)
+
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_signing_progress)
-
-        // Inicializa views
-        tvTitle = findViewById(R.id.tv_title)
-        tvStatus = findViewById(R.id.tv_status)
-        progressBar = findViewById(R.id.progress_bar)
-        layoutButtons = findViewById(R.id.layout_buttons)
-        btnViewOutput = findViewById(R.id.btn_view_output)
-        btnFinish = findViewById(R.id.btn_finish)
+        supportActionBar?.hide()
 
         // Pega dados da Intent
         inputPath = intent.getStringExtra("inputPath")
@@ -45,8 +36,17 @@ class SigningProgressActivity : BaseActivity() {
         alias = intent.getStringExtra("alias")
         keyPass = intent.getStringExtra("keyPass")
 
-        btnFinish.setOnClickListener { finish() }
-        btnViewOutput.setOnClickListener { openOutputFolder() }
+        setContent {
+            ApkEditorTheme {
+                SigningProgressScreen(
+                    status = status,
+                    finished = finished,
+                    failed = failed,
+                    onViewOutput = ::openOutputFolder,
+                    onFinish = ::finish
+                )
+            }
+        }
 
         startSigning()
     }
@@ -65,7 +65,11 @@ class SigningProgressActivity : BaseActivity() {
                 ksPass?.toCharArray() ?: charArrayOf(),
                 alias ?: "",
                 keyPass?.toCharArray() ?: charArrayOf(),
-                object : ApkSignerManager.SignerListener {
+                enableV1 = prefs.getBoolean("sign_v1", true),
+                enableV2 = prefs.getBoolean("sign_v2", true),
+                enableV3 = prefs.getBoolean("sign_v3", true),
+                enableV4 = prefs.getBoolean(AppSettings.SIGN_V4, false),
+                listener = object : ApkSignerManager.SignerListener {
                     override fun onStart() {
                         updateUI(getString(R.string.signing_started), false)
                     }
@@ -88,30 +92,14 @@ class SigningProgressActivity : BaseActivity() {
 
     private fun updateUI(message: String, isFinished: Boolean, isError: Boolean = false) {
         runOnUiThread {
-            tvStatus.text = message
-            if (isFinished) {
-                progressBar.visibility = View.GONE
-                layoutButtons.visibility = View.VISIBLE
-                if (isError) {
-                    tvTitle.text = getString(R.string.signing_failed)
-                    btnViewOutput.visibility = View.GONE
-                } else {
-                    tvTitle.text = getString(R.string.signing_completed)
-                }
-            }
+            status = message
+            finished = isFinished
+            failed = isError
         }
     }
 
     private fun openOutputFolder() {
         val file = File(outputPath ?: return)
-        val intent = Intent(Intent.ACTION_GET_CONTENT)
-        val uri = Uri.parse(file.parent)
-        intent.setDataAndType(uri, "*/*")
-        // Como o Android pode não ter um gerenciador de arquivos padrão que aceite isso bem,
-        // vamos tentar abrir o diretório usando o FileListActivity do próprio app se possível,
-        // ou apenas terminar e deixar o usuário ver na lista.
-        // Mas por requisição do usuário "ver a pasta de saída", vamos tentar o FileListActivity.
-        
         val resultIntent = Intent()
         resultIntent.putExtra("targetPath", file.parent)
         setResult(RESULT_OK, resultIntent)

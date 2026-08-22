@@ -1,6 +1,7 @@
 package com.saas.apkeditorplus.full
 
 import android.content.Context
+import com.saas.apkeditorplus.AppSettings
 import android.util.Xml
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -229,7 +230,7 @@ internal object ResourceStringEditor {
         val selectedItems = filterDisplayableItems(
             filterItems(snapshot.items, localeQualifier)
         )
-        val targetDir = File(context.cacheDir, "full_edit_strings").apply { mkdirs() }
+        val targetDir = AppSettings.workspaceRoot(context, "full_edit_strings")
         val outputFile = File(
             targetDir,
             "${apkPath.hashCode().toUInt().toString(16)}_strings.xml"
@@ -322,7 +323,7 @@ internal object ResourceStringEditor {
         }.toByteArray()
         writeLeInt(merged, 4, merged.size)
 
-        val outputDir = File(context.cacheDir, "full_edit_resources").apply { mkdirs() }
+        val outputDir = AppSettings.workspaceRoot(context, "full_edit_resources")
         val outputFile = File(
             outputDir,
             "${apkPath.hashCode().toUInt().toString(16)}_resources.arsc"

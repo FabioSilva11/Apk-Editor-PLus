@@ -14,6 +14,12 @@ import java.util.*
 
 class KeyStoreManager(private val context: Context) {
 
+    data class KeyAliasInfo(
+        val alias: String,
+        val subject: String,
+        val validUntil: Date?
+    )
+
     private val keyStoreDir = File(context.filesDir, "keystores")
 
     init {
@@ -34,7 +40,8 @@ class KeyStoreManager(private val context: Context) {
         orgName: String,
         locality: String,
         state: String,
-        country: String
+        country: String,
+        keyPassword: CharArray = password
     ): File {
         val file = File(keyStoreDir, if (fileName.endsWith(".jks")) fileName else "$fileName.jks")
         
@@ -50,7 +57,7 @@ class KeyStoreManager(private val context: Context) {
             "CN=$commonName, OU=$orgUnit, O=$orgName, L=$locality, ST=$state, C=$country"
         )
 
-        keyStore.setKeyEntry(alias, keyPair.private, password, arrayOf(cert))
+        keyStore.setKeyEntry(alias, keyPair.private, keyPassword, arrayOf(cert))
 
         FileOutputStream(file).use { keyStore.store(it, password) }
         
@@ -80,7 +87,51 @@ class KeyStoreManager(private val context: Context) {
     }
 
     fun listKeyStores(): List<File> {
-        return keyStoreDir.listFiles()?.toList() ?: emptyList()
+        return keyStoreDir.listFiles()?.filter(File::isFile)?.sortedBy { it.name.lowercase() } ?: emptyList()
+    }
+
+    fun importKeyStore(displayName: String, bytes: ByteArray): File {
+        require(bytes.isNotEmpty()) { "Arquivo de chave vazio" }
+        val safeName = displayName.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .ifBlank { "imported_${System.currentTimeMillis()}.p12" }
+        val target = generateSequence(File(keyStoreDir, safeName)) { current ->
+            val base = safeName.substringBeforeLast('.', safeName)
+            val extension = safeName.substringAfterLast('.', "")
+            val index = current.nameWithoutExtension.substringAfterLast('_').toIntOrNull()?.plus(1) ?: 1
+            File(keyStoreDir, if (extension.isBlank()) "${base}_$index" else "${base}_$index.$extension")
+        }.first { !it.exists() }
+        target.writeBytes(bytes)
+        return target
+    }
+
+    fun inspectKeyStore(file: File, password: CharArray): List<KeyAliasInfo> {
+        val keyStore = loadKeyStore(file, password)
+        return keyStore.aliases().toList()
+            .filter(keyStore::isKeyEntry)
+            .map { alias ->
+                val certificate = keyStore.getCertificate(alias) as? X509Certificate
+                KeyAliasInfo(
+                    alias = alias,
+                    subject = certificate?.subjectX500Principal?.name.orEmpty(),
+                    validUntil = certificate?.notAfter
+                )
+            }
+    }
+
+    companion object {
+        fun loadKeyStore(file: File, password: CharArray): KeyStore {
+            var lastError: Throwable? = null
+            for (type in linkedSetOf("PKCS12", KeyStore.getDefaultType(), "JKS")) {
+                try {
+                    return KeyStore.getInstance(type).also { keyStore ->
+                        file.inputStream().use { keyStore.load(it, password) }
+                    }
+                } catch (error: Throwable) {
+                    lastError = error
+                }
+            }
+            throw GeneralSecurityException("Formato de chave ou senha inválidos", lastError)
+        }
     }
 
     fun getTestKey(): File {

@@ -1,163 +1,97 @@
 package com.saas.apkeditorplus
 
 import android.os.Bundle
-import android.view.View
-import android.view.ViewGroup
-import android.widget.*
-import android.content.DialogInterface
-import androidx.appcompat.app.AlertDialog
-import com.google.android.material.floatingactionbutton.FloatingActionButton
-import com.google.android.material.textfield.TextInputEditText
+import android.provider.OpenableColumns
+import android.widget.Toast
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.saas.apkeditorplus.ui.keys.KeyStoreScreen
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
-import java.util.*
 
 class KeyStoreListActivity : BaseActivity() {
-
-    private lateinit var listView: ListView
-    private lateinit var tvEmpty: TextView
-    private lateinit var adapter: KeyStoreAdapter
     private lateinit var manager: KeyStoreManager
+    private var files by mutableStateOf<List<File>>(emptyList())
+
+    private val importer = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@registerForActivityResult
+        runCatching {
+            val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            } ?: "imported_key.p12"
+            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: error("Não foi possível ler a chave")
+            manager.importKeyStore(name, bytes)
+        }.onSuccess {
+            files = manager.listKeyStores()
+            Toast.makeText(this, "Chave importada", Toast.LENGTH_SHORT).show()
+        }.onFailure { Toast.makeText(this, it.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show() }
+    }
+
+    override fun shouldHideActionBar(): Boolean = true
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_keystore_list)
-
+        supportActionBar?.hide()
         manager = KeyStoreManager(this)
-        listView = findViewById(R.id.application_list)
-        tvEmpty = findViewById(R.id.tv_empty)
-        
-        setupListView()
-        
-        findViewById<FloatingActionButton>(R.id.fab_add).setOnClickListener {
-            showCreateDialog()
-        }
-    }
-
-
-    private fun setupListView() {
-        adapter = KeyStoreAdapter(manager.listKeyStores().toMutableList())
-        listView.adapter = adapter
-        updateEmptyState()
-
-        listView.setOnItemClickListener { _, _, position, _ ->
-            val file = adapter.getItem(position)
-            Toast.makeText(this, "Key: ${file.name}", Toast.LENGTH_SHORT).show()
-        }
-
-        listView.setOnItemLongClickListener { _, _, position, _ ->
-            showDeleteConfirm(adapter.getItem(position), position)
-            true
-        }
-    }
-
-    private fun updateEmptyState() {
-        if (adapter.count == 0) {
-            tvEmpty.visibility = View.VISIBLE
-            listView.visibility = View.GONE
-        } else {
-            tvEmpty.visibility = View.GONE
-            listView.visibility = View.VISIBLE
-        }
-    }
-
-    private fun showCreateDialog() {
-        val view = layoutInflater.inflate(R.layout.dlg_create_keystore, null)
-        val etName = view.findViewById<TextInputEditText>(R.id.et_name)
-        val etKsPass = view.findViewById<TextInputEditText>(R.id.et_ks_pass)
-        val etAlias = view.findViewById<TextInputEditText>(R.id.et_alias)
-        val etKeyPass = view.findViewById<TextInputEditText>(R.id.et_key_pass)
-        
-        // Cert info
-        val etCn = view.findViewById<TextInputEditText>(R.id.et_cn)
-        val etOu = view.findViewById<TextInputEditText>(R.id.et_ou)
-        val etO = view.findViewById<TextInputEditText>(R.id.et_o)
-        val etL = view.findViewById<TextInputEditText>(R.id.et_l)
-        val etS = view.findViewById<TextInputEditText>(R.id.et_s)
-        val etC = view.findViewById<TextInputEditText>(R.id.et_c)
-
-        AlertDialog.Builder(this)
-            .setTitle(R.string.create_keystore)
-            .setView(view)
-            .setPositiveButton(R.string.create) { dialog, _ ->
-                val name = etName.text.toString()
-                val ksPass = etKsPass.text.toString()
-                val alias = etAlias.text.toString()
-                val keyPass = etKeyPass.text.toString()
-                
-                if (name.isEmpty() || ksPass.isEmpty() || alias.isEmpty() || keyPass.isEmpty()) {
-                    Toast.makeText(this, getString(R.string.fill_all_required_fields), Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
-
-                try {
-                    val file = manager.createKeyStore(
-                        name,
-                        ksPass.toCharArray(),
-                        alias,
-                        etCn.text.toString(),
-                        etOu.text.toString(),
-                        etO.text.toString(),
-                        etL.text.toString(),
-                        etS.text.toString(),
-                        etC.text.toString()
-                    )
-                    adapter.add(file)
-                    updateEmptyState()
-                    Toast.makeText(this, getString(R.string.key_created_successfully), Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_LONG).show()
-                }
+        files = manager.listKeyStores()
+        setContent {
+            ApkEditorTheme {
+                KeyStoreScreen(
+                    files = files,
+                    onBack = ::finish,
+                    onImport = { importer.launch(arrayOf("application/x-pkcs12", "application/octet-stream", "application/x-java-keystore")) },
+                    onCreate = ::createKey,
+                    onInspect = ::inspectKey,
+                    onDelete = { file ->
+                        if (file.delete()) files = manager.listKeyStores()
+                    }
+                )
             }
-            .setNegativeButton(R.string.colormixer_cancel, null)
-            .show()
+        }
     }
 
-    private fun showDeleteConfirm(file: File, position: Int) {
-        AlertDialog.Builder(this)
-            .setTitle(R.string.delete_key)
-            .setMessage(getString(R.string.confirm_delete_key, file.name))
-            .setPositiveButton(R.string.delete) { dialog, _ ->
-                if (file.delete()) {
-                    adapter.removeAt(position)
-                    updateEmptyState()
-                    Toast.makeText(this, getString(R.string.deleted), Toast.LENGTH_SHORT).show()
-                }
+    private fun createKey(form: KeyCreationForm): String? {
+        return runCatching {
+            require(form.fileName.isNotBlank() && form.storePassword.isNotBlank() && form.alias.isNotBlank()) {
+                "Preencha nome, senha e alias"
             }
-            .setNegativeButton(R.string.colormixer_cancel, null)
-            .show()
+            require(form.country.length == 2) { "País deve usar duas letras" }
+            manager.createKeyStore(
+                form.fileName,
+                form.storePassword.toCharArray(),
+                form.alias,
+                form.commonName,
+                form.organizationUnit,
+                form.organization,
+                form.locality,
+                form.state,
+                form.country.uppercase(),
+                form.keyPassword.ifBlank { form.storePassword }.toCharArray()
+            )
+            files = manager.listKeyStores()
+            null
+        }.getOrElse { it.message ?: getString(R.string.failed) }
     }
 
-    override fun onSupportNavigateUp(): Boolean {
-        finish()
-        return true
-    }
-
-    private inner class KeyStoreAdapter(private val list: MutableList<File>) : BaseAdapter() {
-        override fun getCount(): Int = list.size
-        override fun getItem(position: Int): File = list[position]
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        fun add(file: File) {
-            list.add(file)
-            notifyDataSetChanged()
-        }
-
-        fun removeAt(position: Int) {
-            list.removeAt(position)
-            notifyDataSetChanged()
-        }
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val view = convertView ?: layoutInflater.inflate(android.R.layout.simple_list_item_2, parent, false)
-            val file = getItem(position)
-            
-            val text1 = view.findViewById<TextView>(android.R.id.text1)
-            val text2 = view.findViewById<TextView>(android.R.id.text2)
-            
-            text1.text = file.name
-            text2.text = getString(R.string.path_label, file.absolutePath)
-            
-            return view
-        }
+    private fun inspectKey(file: File, password: String): Pair<List<KeyStoreManager.KeyAliasInfo>, String?> {
+        return runCatching { manager.inspectKeyStore(file, password.toCharArray()) to null }
+            .getOrElse { emptyList<KeyStoreManager.KeyAliasInfo>() to (it.message ?: "Senha inválida") }
     }
 }
+
+data class KeyCreationForm(
+    val fileName: String = "",
+    val storePassword: String = "",
+    val alias: String = "",
+    val keyPassword: String = "",
+    val commonName: String = "APK Editor Plus",
+    val organizationUnit: String = "Android",
+    val organization: String = "Personal",
+    val locality: String = "Manaus",
+    val state: String = "Amazonas",
+    val country: String = "BR"
+)

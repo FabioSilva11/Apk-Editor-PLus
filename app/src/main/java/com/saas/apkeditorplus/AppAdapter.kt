@@ -17,7 +17,8 @@ data class AppInfo(
     val name: String,
     val packageName: String,
     val sourceDir: String,
-    var icon: Drawable? = null
+    var icon: Drawable? = null,
+    val lastModified: Long = 0L
 )
 
 class AppAdapter(private val context: Context) : BaseAdapter() {

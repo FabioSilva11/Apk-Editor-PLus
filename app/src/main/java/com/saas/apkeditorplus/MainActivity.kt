@@ -113,6 +113,21 @@ class MainActivity : BaseActivity() {
         }
 
         checkStoragePermissions()
+        handleShortcutIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShortcutIntent(intent)
+    }
+
+    private fun handleShortcutIntent(intent: Intent) {
+        when (intent.data?.host) {
+            "select-apk" -> openDestination(MainMenuDestination.APK_FILE)
+            "installed-apps" -> openDestination(MainMenuDestination.INSTALLED_APP)
+        }
+        intent.data = null
     }
 
     private fun openDestination(destination: MainMenuDestination) {
@@ -166,7 +181,7 @@ class MainActivity : BaseActivity() {
 
     private fun openTelegram() {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/seu_grupo")))
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/FabioSilva11/Apk-Editor-PLus")))
         } catch (_: Exception) {
             Toast.makeText(this, "Erro ao abrir o Telegram", Toast.LENGTH_SHORT).show()
         }

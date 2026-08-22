@@ -2,6 +2,7 @@ package com.saas.apkeditorplus.full
 
 import android.content.Context
 import android.util.Xml
+import com.saas.apkeditorplus.AppSettings
 import com.reandroid.apk.ApkModule
 import com.reandroid.apk.ApkModuleXmlDecoder
 import com.reandroid.apk.ApkModuleXmlEncoder
@@ -10,11 +11,17 @@ import com.reandroid.apk.DexDecoder
 import com.reandroid.apk.DexFileInputSource
 import com.reandroid.arsc.chunk.PackageBlock
 import com.reandroid.arsc.chunk.TableBlock
+import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
 import kotlin.io.use
 import org.xmlpull.v1.XmlPullParser
+import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.transform.OutputKeys
+import javax.xml.transform.TransformerFactory
+import javax.xml.transform.dom.DOMSource
+import javax.xml.transform.stream.StreamResult
 
 internal object FullEditWorkspaceManager {
     private const val WORKSPACE_DIR = "full_edit_workspace"
@@ -76,7 +83,7 @@ internal object FullEditWorkspaceManager {
         val apkFile = File(apkPath)
         require(apkFile.isFile) { "APK file not found" }
         val key = workspaceKey(apkFile)
-        val rootDir = File(context.cacheDir, "$WORKSPACE_DIR${File.separator}$key")
+        val rootDir = File(AppSettings.workspaceRoot(context, WORKSPACE_DIR), key)
         val marker = File(rootDir, WORKSPACE_MARKER)
         if (!marker.exists()) {
             decodeWorkspace(apkFile, rootDir)
@@ -88,6 +95,23 @@ internal object FullEditWorkspaceManager {
 
     fun getManifestFile(context: Context, apkPath: String): File {
         return getWorkspace(context, apkPath).manifestFile
+    }
+
+    fun compileManifest(context: Context, apkPath: String): File {
+        val workspace = getWorkspace(context, apkPath)
+        ApkModule.loadApkFile(File(apkPath)).use { apkModule ->
+            val encoder = ApkModuleXmlEncoder(apkModule, apkModule.tableBlock)
+            encoder.buildResources(workspace.rootDir)
+            val manifestSource = apkModule.getInputSource(AndroidManifestBlock.FILE_NAME)
+                ?: error("Failed to rebuild AndroidManifest.xml")
+            val outputDir = AppSettings.workspaceRoot(context, "full_edit_workspace_manifest")
+            val outputFile = File(outputDir, "${workspace.key}_AndroidManifest.xml")
+            manifestSource.write(outputFile)
+            require(AndroidManifestBlock.load(outputFile).packageName.isNotBlank()) {
+                "Generated AndroidManifest.xml is invalid"
+            }
+            return outputFile
+        }
     }
 
     fun listStringLocales(context: Context, apkPath: String): List<String> {
@@ -137,7 +161,7 @@ internal object FullEditWorkspaceManager {
     ): File {
         val values = readStringResources(context, apkPath, localeQualifier)
             .associate { it.name to it.value.orEmpty() }
-        val outputDir = File(context.cacheDir, "full_edit_strings_workspace").apply { mkdirs() }
+        val outputDir = AppSettings.workspaceRoot(context, "full_edit_strings_workspace")
         val workspace = getWorkspace(context, apkPath)
         val outputFile = File(outputDir, "${workspace.key}_${safeLocaleSuffix(localeQualifier)}_strings.xml")
         writeStringsXml(outputFile, values)
@@ -151,11 +175,10 @@ internal object FullEditWorkspaceManager {
         name: String,
         newValue: String
     ): File {
-        val currentValues = readStringResources(context, apkPath, localeQualifier)
-            .associate { it.name to it.value.orEmpty() }
-            .toMutableMap()
-        currentValues[name] = newValue
-        return writeLocaleSnapshotAndCompile(context, apkPath, localeQualifier, currentValues)
+        val workspace = getWorkspace(context, apkPath)
+        val valuesDir = valuesDirectoryForQualifier(workspace.resDir, localeQualifier)
+        require(updateStringValue(valuesDir, name, newValue)) { "String not found: $name" }
+        return compileResources(context, apkPath, workspace)
     }
 
     fun applyEditedStringsFile(
@@ -165,9 +188,20 @@ internal object FullEditWorkspaceManager {
         editedStringsXml: File
     ): File {
         require(editedStringsXml.isFile) { "Edited strings file not found" }
-        val parsedValues = readStringValues(editedStringsXml)
-            .associate { it.name to it.value }
-        return writeLocaleSnapshotAndCompile(context, apkPath, localeQualifier, parsedValues)
+        val parsedValues = readStringValues(editedStringsXml).associate { it.name to it.value }
+        require(parsedValues.isNotEmpty()) { "No string resources found in edited file" }
+        val workspace = getWorkspace(context, apkPath)
+        val valuesDir = valuesDirectoryForQualifier(workspace.resDir, localeQualifier)
+        val currentValues = readStringResources(context, apkPath, localeQualifier)
+            .associate { it.name to it.value.orEmpty() }
+        var changed = 0
+        parsedValues.forEach { (name, value) ->
+            if (currentValues[name] != value && updateStringValue(valuesDir, name, value)) {
+                changed++
+            }
+        }
+        require(changed > 0) { "No changed strings found" }
+        return compileResources(context, apkPath, workspace)
     }
 
     fun createLocaleFromDefault(
@@ -210,22 +244,9 @@ internal object FullEditWorkspaceManager {
             error("Locale already exists")
         }
 
-        return writeLocaleSnapshotAndCompile(context, apkPath, localeQualifier, mergedValues)
-    }
-
-    private fun writeLocaleSnapshotAndCompile(
-        context: Context,
-        apkPath: String,
-        localeQualifier: String,
-        values: Map<String, String>
-    ): File {
         val workspace = getWorkspace(context, apkPath)
-        val valuesDir = valuesDirectoryForQualifier(workspace.resDir, localeQualifier)
-        if (!valuesDir.exists()) {
-            valuesDir.mkdirs()
-        }
-        File(valuesDir, LEGACY_OVERRIDE_STRINGS_FILE).delete()
-        writeStringsXml(File(valuesDir, STRINGS_FILE), values)
+        val valuesDir = valuesDirectoryForQualifier(workspace.resDir, localeQualifier).apply { mkdirs() }
+        writeStringsXml(File(valuesDir, STRINGS_FILE), mergedValues)
         return compileResources(context, apkPath, workspace)
     }
 
@@ -237,7 +258,7 @@ internal object FullEditWorkspaceManager {
         ApkModule.loadApkFile(File(apkPath)).use { apkModule ->
             val encoder = ApkModuleXmlEncoder(apkModule, apkModule.tableBlock)
             encoder.scanDirectory(workspace.rootDir)
-            val outputDir = File(context.cacheDir, "full_edit_workspace_resources").apply { mkdirs() }
+            val outputDir = AppSettings.workspaceRoot(context, "full_edit_workspace_resources")
             val outputFile = File(outputDir, "${workspace.key}_resources.arsc")
             val inputSource = apkModule.getInputSource(TableBlock.FILE_NAME)
                 ?: error("Failed to rebuild resources.arsc")
@@ -316,24 +337,46 @@ internal object FullEditWorkspaceManager {
             return emptyList()
         }
         return runCatching {
-            val parser = Xml.newPullParser()
-            file.inputStream().use { input ->
-                parser.setInput(input, Charsets.UTF_8.name())
-                val values = mutableListOf<StringValue>()
-                var event = parser.eventType
-                while (event != XmlPullParser.END_DOCUMENT) {
-                    if (event == XmlPullParser.START_TAG && parser.name == "string") {
-                        val name = parser.getAttributeValue(null, "name")
-                        val value = parser.nextText()
-                        if (!name.isNullOrBlank()) {
-                            values.add(StringValue(name, value))
-                        }
-                    }
-                    event = parser.next()
+            val document = newDocumentBuilderFactory().newDocumentBuilder().parse(file)
+            val nodes = document.getElementsByTagName("string")
+            buildList {
+                for (index in 0 until nodes.length) {
+                    val element = nodes.item(index) as? org.w3c.dom.Element ?: continue
+                    val name = element.getAttribute("name")
+                    if (name.isNotBlank()) add(StringValue(name, element.textContent.orEmpty()))
                 }
-                values
             }
         }.getOrDefault(emptyList())
+    }
+
+    private fun updateStringValue(valuesDir: File, name: String, value: String): Boolean {
+        for (file in stringXmlFiles(valuesDir)) {
+            val document = runCatching { newDocumentBuilderFactory().newDocumentBuilder().parse(file) }
+                .getOrNull() ?: continue
+            val nodes = document.getElementsByTagName("string")
+            for (index in 0 until nodes.length) {
+                val element = nodes.item(index) as? org.w3c.dom.Element ?: continue
+                if (element.getAttribute("name") != name) continue
+                while (element.hasChildNodes()) element.removeChild(element.firstChild)
+                element.appendChild(document.createTextNode(value))
+                val transformer = TransformerFactory.newInstance().newTransformer().apply {
+                    setOutputProperty(OutputKeys.ENCODING, "UTF-8")
+                    setOutputProperty(OutputKeys.INDENT, "yes")
+                }
+                transformer.transform(DOMSource(document), StreamResult(file))
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun newDocumentBuilderFactory(): DocumentBuilderFactory {
+        return DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+        }
     }
 
     private fun writeStringsXml(file: File, values: Map<String, String>) {

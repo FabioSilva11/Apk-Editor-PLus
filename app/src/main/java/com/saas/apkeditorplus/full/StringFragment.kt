@@ -3,29 +3,58 @@ package com.saas.apkeditorplus.full
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import android.text.Editable
 import android.text.InputType
-import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
-import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ListView
-import android.widget.ProgressBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowDropDown
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.saas.apkeditorplus.FullEditActivity
 import com.saas.apkeditorplus.R
 import com.saas.apkeditorplus.TextEditBigActivity
+import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -38,17 +67,13 @@ class StringFragment : Fragment() {
         val label: String
     )
 
-    private lateinit var languageSpinner: Spinner
-    private lateinit var listView: ListView
-    private lateinit var progressBar: ProgressBar
-    private lateinit var keywordEdit: EditText
-    private lateinit var emptyView: TextView
-    private lateinit var languageAdapter: ArrayAdapter<String>
-
-    private var languageOptions = emptyList<LanguageOption>()
-    private var selectedQualifier: String = ""
+    private var languageOptions by mutableStateOf<List<LanguageOption>>(emptyList())
+    private var selectedQualifier by mutableStateOf("")
     private var allItems = emptyList<FullEditRepository.StringResourceItem>()
-    private var visibleItems = emptyList<FullEditRepository.StringResourceItem>()
+    private var visibleItems by mutableStateOf<List<FullEditRepository.StringResourceItem>>(emptyList())
+    private var query by mutableStateOf("")
+    private var loading by mutableStateOf(true)
+    private var emptyMessage by mutableStateOf("")
     private var pendingEditorFile: File? = null
 
     private val editorLauncher = registerForActivityResult(
@@ -78,72 +103,63 @@ class StringFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View {
-        return inflater.inflate(R.layout.fragment_full_strings, container, false)
+        return ComposeView(requireContext()).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent { ApkEditorTheme { StringsContent() } }
+        }
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        languageSpinner = view.findViewById(R.id.language_spinner)
-        listView = view.findViewById(R.id.string_list)
-        progressBar = view.findViewById(R.id.progress_bar)
-        keywordEdit = view.findViewById(R.id.keyword_edit)
-        emptyView = view.findViewById(R.id.empty_view)
+        loadLanguages()
+    }
 
-        listView.emptyView = emptyView
-        listView.adapter = StringListAdapter()
-        listView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-            val item = visibleItems.getOrNull(position) ?: return@OnItemClickListener
-            showEditValueDialog(item)
-        }
-
-        languageAdapter = ArrayAdapter(
-            requireContext(),
-            R.layout.item_full_edit_spinner,
-            mutableListOf<String>()
-        ).apply {
-            setDropDownViewResource(R.layout.item_full_edit_spinner_dropdown)
-        }
-        languageSpinner.adapter = languageAdapter
-        languageSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(
-                parent: AdapterView<*>?,
-                view: View?,
-                position: Int,
-                id: Long
-            ) {
-                val qualifier = languageOptions.getOrNull(position)?.qualifier ?: ""
-                if (selectedQualifier != qualifier) {
-                    selectedQualifier = qualifier
-                    loadStrings()
-                } else if (allItems.isEmpty()) {
-                    loadStrings()
+    @Composable
+    private fun StringsContent() {
+        var languageMenu by remember { mutableStateOf(false) }
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                IconButton(onClick = ::showAddLanguageDialog) { Icon(Icons.Rounded.Add, "Adicionar idioma") }
+                androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
+                    androidx.compose.material3.TextButton(onClick = { languageMenu = true }, Modifier.fillMaxWidth()) {
+                        Text(languageOptions.firstOrNull { it.qualifier == selectedQualifier }?.label ?: "Idioma padrão", Modifier.weight(1f), maxLines = 1)
+                        Icon(Icons.Rounded.ArrowDropDown, null)
+                    }
+                    DropdownMenu(languageMenu, { languageMenu = false }) {
+                        languageOptions.forEach { option ->
+                            DropdownMenuItem(text = { Text(option.label) }, onClick = {
+                                languageMenu = false
+                                if (selectedQualifier != option.qualifier) {
+                                    selectedQualifier = option.qualifier
+                                    loadStrings()
+                                }
+                            })
+                        }
+                    }
+                }
+                IconButton(onClick = ::openCurrentLanguageInEditor) { Icon(Icons.Rounded.Edit, "Editar arquivo do idioma") }
+            }
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it; applyFilter(it) },
+                placeholder = { Text("Pesquisar chave ou valor") },
+                trailingIcon = { Icon(Icons.Rounded.Search, null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!loading && visibleItems.isEmpty()) Text(emptyMessage, Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(visibleItems, key = { it.name }) { item ->
+                    ListItem(
+                        headlineContent = { Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = { Text(item.value.orEmpty(), maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.fillMaxWidth().clickable { showEditValueDialog(item) }
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
-
-        keywordEdit.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                applyFilter(s?.toString().orEmpty())
-            }
-
-            override fun afterTextChanged(s: Editable?) = Unit
-        })
-
-        view.findViewById<View>(R.id.search_button).setOnClickListener {
-            applyFilter(keywordEdit.text.toString())
-        }
-        view.findViewById<View>(R.id.action_add_button).setOnClickListener {
-            showAddLanguageDialog()
-        }
-        view.findViewById<View>(R.id.open_editor_button).setOnClickListener {
-            openCurrentLanguageInEditor()
-        }
-
-        loadLanguages()
     }
 
     private fun host(): FullEditActivity = requireActivity() as FullEditActivity
@@ -153,8 +169,8 @@ class StringFragment : Fragment() {
     private fun loadLanguages(targetQualifier: String? = selectedQualifier) {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
-        emptyView.visibility = View.GONE
+        loading = true
+        emptyMessage = ""
 
         viewLifecycleOwner.lifecycleScope.launch {
             val qualifiers = runCatching {
@@ -162,9 +178,8 @@ class StringFragment : Fragment() {
                     FullEditWorkspaceManager.listStringLocales(context, apkPath)
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
-                emptyView.visibility = View.VISIBLE
-                emptyView.text = error.message ?: getString(R.string.failed)
+                loading = false
+                emptyMessage = error.message ?: getString(R.string.failed)
                 return@launch
             }
 
@@ -182,10 +197,6 @@ class StringFragment : Fragment() {
                 ?: 0
             selectedQualifier = languageOptions.getOrNull(targetIndex)?.qualifier.orEmpty()
 
-            languageAdapter.clear()
-            languageAdapter.addAll(languageOptions.map { it.label })
-            languageAdapter.notifyDataSetChanged()
-            languageSpinner.setSelection(targetIndex, false)
             loadStrings()
         }
     }
@@ -193,8 +204,8 @@ class StringFragment : Fragment() {
     private fun loadStrings() {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
-        emptyView.visibility = View.GONE
+        loading = true
+        emptyMessage = ""
 
         viewLifecycleOwner.lifecycleScope.launch {
             val items = runCatching {
@@ -204,16 +215,14 @@ class StringFragment : Fragment() {
             }.getOrElse { error ->
                 allItems = emptyList()
                 visibleItems = emptyList()
-                progressBar.visibility = View.GONE
-                emptyView.visibility = View.VISIBLE
-                emptyView.text = error.message ?: getString(R.string.failed)
-                (listView.adapter as BaseAdapter).notifyDataSetChanged()
+                loading = false
+                emptyMessage = error.message ?: getString(R.string.failed)
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             allItems = items
-            applyFilter(keywordEdit.text.toString())
+            applyFilter(query)
         }
     }
 
@@ -228,12 +237,11 @@ class StringFragment : Fragment() {
             }
         }
 
-        emptyView.text = if (allItems.isEmpty()) {
+        emptyMessage = if (allItems.isEmpty()) {
             getString(R.string.full_edit_no_string_resources)
         } else {
             getString(R.string.not_found)
         }
-        (listView.adapter as BaseAdapter).notifyDataSetChanged()
     }
 
     private fun showEditValueDialog(item: FullEditRepository.StringResourceItem) {
@@ -275,7 +283,7 @@ class StringFragment : Fragment() {
     private fun saveSingleValue(name: String, newValue: String) {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val compiledFile = runCatching {
@@ -289,7 +297,7 @@ class StringFragment : Fragment() {
                     )
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -383,7 +391,7 @@ class StringFragment : Fragment() {
 
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val compiledFile = runCatching {
@@ -391,7 +399,7 @@ class StringFragment : Fragment() {
                     FullEditWorkspaceManager.addLanguageLikeOriginal(context, apkPath, qualifier)
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.lang_exist),
@@ -413,7 +421,7 @@ class StringFragment : Fragment() {
     private fun openCurrentLanguageInEditor() {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val editorFile = runCatching {
@@ -425,7 +433,7 @@ class StringFragment : Fragment() {
                     )
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -434,7 +442,7 @@ class StringFragment : Fragment() {
                 return@launch
             }
 
-            progressBar.visibility = View.GONE
+            loading = false
             pendingEditorFile = editorFile
             editorLauncher.launch(
                 Intent(requireContext(), TextEditBigActivity::class.java).apply {
@@ -448,7 +456,7 @@ class StringFragment : Fragment() {
     private fun applyEditedStringsFile(editedFile: File) {
         val context = requireContext().applicationContext
         val apkPath = apkPath()
-        progressBar.visibility = View.VISIBLE
+        loading = true
 
         viewLifecycleOwner.lifecycleScope.launch {
             val compiledFile = runCatching {
@@ -461,7 +469,7 @@ class StringFragment : Fragment() {
                     )
                 }
             }.getOrElse { error ->
-                progressBar.visibility = View.GONE
+                loading = false
                 Toast.makeText(
                     requireContext(),
                     error.message ?: getString(R.string.failed),
@@ -476,20 +484,4 @@ class StringFragment : Fragment() {
         }
     }
 
-    private inner class StringListAdapter : BaseAdapter() {
-        override fun getCount(): Int = visibleItems.size
-
-        override fun getItem(position: Int): Any = visibleItems[position]
-
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-            val rowView = convertView
-                ?: layoutInflater.inflate(R.layout.item_full_string, parent, false)
-            val item = visibleItems[position]
-            rowView.findViewById<TextView>(R.id.string_name).text = item.name
-            rowView.findViewById<TextView>(R.id.string_value).text = item.value.orEmpty()
-            return rowView
-        }
-    }
 }
