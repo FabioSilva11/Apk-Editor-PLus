@@ -1,81 +1,140 @@
 # APK Editor Plus
 
-APK Editor Plus is an Android application for inspecting and modifying APK files directly on the device. The interface is being migrated to Jetpack Compose with Material 3 while the editing behavior is brought closer to the original APK Editor.
+APK Editor Plus é um editor de APK para Android desenvolvido em Kotlin. Esta versão está sendo modernizada com Jetpack Compose e Material 3 e teve as funções visíveis comparadas com o APK Editor original decompilado para recuperar comportamentos que ainda estavam superficiais no projeto.
 
 > [!WARNING]
-> This project is currently **under development** and may contain bugs. Use it at your own risk.
+> Projeto em desenvolvimento. Faça backup dos APKs antes de editar e modifique somente aplicativos para os quais você tenha autorização.
 
-## 🚀 Current features
+## O que foi implementado nesta versão
 
-- **Simple Edit with real pages**: Browse APK files through separate **Files**, **Images**, and **Audio** pages backed by `ViewPager2` and fragments.
-- **Hierarchical file browser**: Navigate APK folders, replace individual files, export entries, and clear pending replacements.
-- **Real image thumbnails**: File managers show the actual image preview for local files and resources stored inside APKs, using memory-limited decoding.
-- **Image resources**: Preview images and replace matching density variants together when they share the same resource name.
-- **Audio resources**: Find common audio formats, play or pause them, replace them, and export them.
-- **String resources by installed language**: Show only languages that already exist in the APK; the add-language action lists the remaining languages with flags and marks newly copied texts for review.
-- **Per-file change history**: Review textual changes as line-by-line diffs, identify changed binary files, and discard changes one file at a time.
-- **Resource Editing**: Modify AXML, string resources, colors, and XML files directly.
-- **Advanced Code Editor**: Powered by [Sora Editor](https://github.com/Rosemoe/sora-editor), featuring syntax highlighting and smooth performance.
-- **APK Signer**: Build and sign your modified APKs with custom or internal keystores.
-- **KeyStore Manager**: Easily manage your digital certificates and signing keys.
-- **SQLite Support**: View and edit SQLite databases within APKs or app data.
-- **Image Editor**: View and modify PNG assets within packages.
-- **Project-Based Workflow**: Manage complex modifications as organized projects for better tracking.
-- **Material 3 interface**: Consistent file rows and icons, navigation-bar-safe actions, and the original APK Editor launcher icon.
-- **Git status**: Display commit authors with their GitHub profile photo when available.
+### Edição simples
 
-## 🛠️ Tech Stack
+A tela de edição simples agora utiliza um `ViewPager2` real com três fragments independentes:
 
-- **Language**: Kotlin
-- **Build System**: Gradle (Kotlin DSL)
-- **Core Libraries**:
-    - [Sora Editor](https://github.com/Rosemoe/sora-editor) for code editing.
-    - `apksig` for secure APK signing.
-    - `bouncycastle` for cryptographic support.
-    - `gson` for data handling.
-    - `aXML` for Android XML manipulation.
+- **Arquivos**: navegação hierárquica pelas pastas do APK, substituição, exportação e remoção de alterações pendentes por arquivo.
+- **Imagens**: lista somente recursos de imagem encontrados em `res/drawable*` e `res/mipmap*`, mostra a miniatura verdadeira e agrupa variantes de densidade que possuem o mesmo nome.
+- **Áudios**: localiza formatos de áudio comuns, permite reproduzir ou pausar, substituir e exportar cada arquivo.
+- O botão **Fechar** muda para **Salvar** quando existe alguma alteração e encaminha os arquivos modificados para a reconstrução do APK.
 
-## 🏗️ Getting Started
+### Miniaturas reais nos gerenciadores
 
-### Prerequisites
+- Arquivos PNG, JPG, JPEG, WebP, GIF e BMP mostram a própria imagem no lugar do ícone genérico.
+- As miniaturas funcionam tanto para arquivos do armazenamento quanto para imagens compactadas dentro de APKs e ZIPs.
+- APKs continuam exibindo o ícone real do aplicativo.
+- A leitura é feita sob demanda, com redução de resolução e limite de 16 MB por imagem para evitar consumo excessivo de memória.
+- O mesmo componente visual é utilizado no seletor de APK, editor simples, editor completo, navegador XML/AXML e seletor de assinatura.
 
-- Android Studio Ladybug or newer.
-- JDK 17.
-- Android device or emulator (API 24+).
+### Strings e idiomas
 
-### Building from Source
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/FabioSilva11/Apk-Editor-PLus.git
-   ```
-2. Open the project in Android Studio.
-3. Sync Project with Gradle Files.
-4. Build and run the `app` module.
+- O seletor principal mostra somente os idiomas que realmente existem no APK aberto.
+- A ação de adicionar idioma mostra apenas os idiomas ainda ausentes.
+- Os idiomas são apresentados com nome, código e bandeira.
+- Ao adicionar um idioma, os textos copiados ficam destacados em vermelho para indicar que precisam ser traduzidos antes de salvar.
+- A lógica considera os diretórios `values`, `values-xx` e qualificadores regionais presentes nos recursos.
 
-### Low-memory build (4 GB RAM)
+### Histórico de diferenças
 
-On Windows PowerShell, use a single worker and a temporary Gradle daemon:
+- Novo fragment **Diferenças** dentro da edição completa.
+- Alterações de texto são exibidas linha por linha: removidas em vermelho e adicionadas em verde.
+- Arquivos binários modificados também são reconhecidos e identificados.
+- Cada arquivo possui seu próprio histórico e pode ser descartado individualmente.
+- Não existe ação global de aceitar ou descartar tudo nesta tela.
+
+### Interface e navegação
+
+- Telas migradas e padronizadas com Jetpack Compose e Material 3.
+- Gerenciadores de arquivos utilizam tamanhos, espaçamentos, cores e ícones consistentes.
+- Barras inferiores e botões respeitam a área dos botões de navegação do Android.
+- O ícone do aplicativo foi restaurado a partir do APK Editor original, mantendo desenho e cores.
+- A tela **Git Status** voltou a mostrar a foto do perfil do autor de cada commit.
+
+### Edição completa
+
+- Navegação pelos arquivos reais do APK e por workspaces Smali derivados de arquivos DEX.
+- Edição de Manifest, XML/AXML, textos e recursos de strings.
+- Substituição, exportação, adição e exclusão de arquivos.
+- Registro centralizado das modificações para reconstrução posterior.
+- Integração dos fragments de arquivos, strings, manifest e diferenças em uma interface Compose.
+
+### Reconstrução e assinatura
+
+- Reconstrução do APK com os arquivos modificados.
+- Assinatura com chave de teste ou KeyStore personalizado.
+- Gerenciamento de certificados, aliases e senhas de chave.
+
+## Comparação aplicada com o APK original
+
+O código decompilado foi usado como referência de comportamento, não como substituição direta do projeto. Entre os comportamentos recuperados estão:
+
+- separação real entre arquivos, imagens e áudios;
+- agrupamento de variantes de imagens por nome;
+- miniaturas lidas diretamente das entradas do ZIP;
+- reprodução e substituição de áudio;
+- idiomas baseados nos recursos realmente presentes;
+- rastreamento individual das alterações antes da reconstrução.
+
+## Tecnologias
+
+- Kotlin
+- Jetpack Compose
+- Material 3
+- AndroidX Fragments e ViewPager2
+- Gradle com Kotlin DSL
+- Sora Editor para edição de código
+- `apksig` para assinatura de APKs
+- Bouncy Castle para operações criptográficas
+- Gson para dados JSON
+- AXML e ferramentas de recursos Android
+
+## Requisitos
+
+- JDK 17
+- Android Studio compatível com o projeto
+- Android SDK instalado
+- Dispositivo ou emulador Android API 24 ou superior
+
+## Compilação
+
+Clone o repositório:
+
+```bash
+git clone https://github.com/FabioSilva11/Apk-Editor-PLus.git
+cd Apk-Editor-PLus
+```
+
+No Windows PowerShell:
+
+```powershell
+.\gradlew.bat assembleDebug
+```
+
+O APK será gerado em:
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+### Configuração para computador com 4 GB de RAM
+
+Use somente um worker, limite a memória da JVM e não mantenha o daemon ativo:
 
 ```powershell
 $env:GRADLE_OPTS='-Xmx768m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8'
-.\gradlew.bat --no-daemon --max-workers=1 assembleDebug
+.\gradlew.bat --no-daemon --max-workers=1 testDebugUnitTest assembleDebug
 ```
 
-The generated debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+## Estado atual
 
-## 🤝 Contributing
+- Build debug compilado com a configuração de baixa memória.
+- Testes unitários do histórico de diferenças e catálogo de idiomas disponíveis.
+- Interface conferida em aparelho Android físico.
+- Miniaturas de imagens locais e internas ao APK verificadas no aparelho.
+- O projeto ainda está em evolução e pode conter formatos de recursos ou APKs incompatíveis.
 
-We welcome contributions of all kinds! This project is a labor of love, and we'd love for you to help make it even better.
+## Contribuindo
 
-- **Found a bug?** Open an issue.
-- **Have a feature idea?** Submit a proposal in the discussions.
-- **Want to code?** Fork the repo and submit a Pull Request!
+Relatos de erro e contribuições podem ser enviados pelas Issues e Pull Requests do repositório. Inclua o modelo do aparelho, versão do Android, operação realizada e o log do erro quando disponível.
 
-Please make sure to follow the existing code style and provide clear descriptions for your changes.
+## Licença
 
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE) (Placeholder - please update if you have a specific license in mind).
-
----
-*Developed with ❤️ by the Apk Editor Plus Team.*
+Consulte o arquivo [LICENSE](LICENSE).
