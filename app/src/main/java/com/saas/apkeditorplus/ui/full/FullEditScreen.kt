@@ -83,7 +83,8 @@ fun FullEditScreen(
                 listOf(
                     Triple("Strings", R.drawable.ic_edit_1, 0),
                     Triple("Arquivos", R.drawable.ic_folder, 1),
-                    Triple("Manifest", R.drawable.ic_edit_4, 2)
+                    Triple("Recursos", R.drawable.ic_edit_2, 2),
+                    Triple("Manifest", R.drawable.ic_edit_4, 3)
                 ).forEach { (label, iconRes, index) ->
                     NavigationBarItem(
                         selected = selectedTab == index,
@@ -93,8 +94,8 @@ fun FullEditScreen(
                     )
                 }
                 NavigationBarItem(
-                    selected = selectedTab == 3,
-                    onClick = { onTabSelected(3) },
+                    selected = selectedTab == 4,
+                    onClick = { onTabSelected(4) },
                     icon = { Icon(Icons.Rounded.Difference, null) },
                     label = { Text("Diferenças") }
                 )

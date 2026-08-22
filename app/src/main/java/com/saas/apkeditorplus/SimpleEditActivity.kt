@@ -1,6 +1,6 @@
 package com.saas.apkeditorplus
 
-import android.content.ActivityNotFoundException
+import android.app.Activity
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
@@ -17,7 +17,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
 import androidx.fragment.app.Fragment
 import androidx.viewpager2.adapter.FragmentStateAdapter
@@ -40,6 +39,7 @@ class SimpleEditActivity : BaseActivity() {
     private val modifiedFiles = linkedMapOf<String, String>()
     private var pendingEntry: SimpleArchiveEntry? = null
     private var pendingExport: SimpleArchiveEntry? = null
+    private var pendingImageEdit: Pair<SimpleArchiveEntry, File>? = null
     private var mediaPlayer: MediaPlayer? = null
 
     private var selectedTab by mutableIntStateOf(0)
@@ -68,6 +68,12 @@ class SimpleEditActivity : BaseActivity() {
         val entry = pendingExport
         pendingExport = null
         if (entry != null && uri != null) exportEntry(entry, uri)
+    }
+
+    private val imageEditorLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val pending = pendingImageEdit
+        pendingImageEdit = null
+        if (result.resultCode == Activity.RESULT_OK && pending != null) applyEditedImage(pending.first, pending.second)
     }
 
     override fun shouldHideActionBar(): Boolean = true
@@ -264,14 +270,25 @@ class SimpleEditActivity : BaseActivity() {
                 val directory = File(cacheDir, "simple_edit_replacements").apply { mkdirs() }
                 val extension = entry.displayName.substringAfterLast('.', "")
                 val suffix = extension.takeIf(String::isNotBlank)?.let { ".$it" }.orEmpty()
-                val file = File(directory, "${entry.entryName.hashCode()}$suffix")
+                val file = File(directory, "selected_${entry.entryName.hashCode()}$suffix")
                 contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use(input::copyTo) }
                     ?: error("Não foi possível ler o arquivo selecionado")
-                file
+                if (isImageResource(entry.entryName)) {
+                    ImageReplacementProcessor.prepare(
+                        sourceApk = File(apkPath),
+                        selectedImage = file,
+                        targetEntries = entry.relatedEntries,
+                        outputDirectory = File(directory, entry.entryName.hashCode().toUInt().toString(16))
+                    )
+                } else {
+                    entry.relatedEntries.map { name ->
+                        ImageReplacementProcessor.PreparedVariant(name, file, 0, 0)
+                    }
+                }
             }
             runOnUiThread {
-                result.onSuccess { file ->
-                    entry.relatedEntries.forEach { modifiedFiles[it] = file.absolutePath }
+                result.onSuccess { variants ->
+                    variants.forEach { variant -> modifiedFiles[variant.entryName] = variant.file.absolutePath }
                     notifyChanges()
                     Toast.makeText(this, R.string.file_replaced, Toast.LENGTH_SHORT).show()
                 }.onFailure { Toast.makeText(this, it.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show() }
@@ -317,14 +334,30 @@ class SimpleEditActivity : BaseActivity() {
             val result = runCatching { materializeEntry(entry) }
             runOnUiThread {
                 result.onSuccess { file ->
-                    val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-                    val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeType(entry.entryName))
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    try {
-                        startActivity(intent)
-                    } catch (_: ActivityNotFoundException) {
-                        Toast.makeText(this, "Nenhum visualizador de imagem disponível", Toast.LENGTH_LONG).show()
-                    }
+                    pendingImageEdit = entry to file
+                    imageEditorLauncher.launch(Intent(this, ImageEditorActivity::class.java).apply {
+                        putExtra(ImageEditorActivity.EXTRA_FILE_PATH, file.absolutePath)
+                        putExtra(ImageEditorActivity.EXTRA_TITLE, entry.displayName)
+                    })
+                }.onFailure { Toast.makeText(this, it.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show() }
+            }
+        }.start()
+    }
+
+    private fun applyEditedImage(entry: SimpleArchiveEntry, editedFile: File) {
+        Thread {
+            val result = runCatching {
+                ImageReplacementProcessor.prepare(
+                    sourceApk = File(apkPath),
+                    selectedImage = editedFile,
+                    targetEntries = entry.relatedEntries,
+                    outputDirectory = File(cacheDir, "simple_edit_replacements/edited_${entry.entryName.hashCode().toUInt().toString(16)}")
+                )
+            }
+            runOnUiThread {
+                result.onSuccess { variants ->
+                    variants.forEach { modifiedFiles[it.entryName] = it.file.absolutePath }
+                    notifyChanges()
                 }.onFailure { Toast.makeText(this, it.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show() }
             }
         }.start()

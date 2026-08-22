@@ -257,24 +257,16 @@ object FullEditRepository {
     }
 
     fun extractEntryForEditing(context: Context, apkPath: String, entryName: String): File {
+        if (entryName == MANIFEST_ENTRY || (entryName.startsWith("res/") && entryName.endsWith(".xml", true))) {
+            return FullEditWorkspaceManager.getXmlFileForEditing(context, apkPath, entryName)
+        }
         val targetDir = AppSettings.workspaceRoot(context, "full_edit")
         val targetFile = File(targetDir, entryName.replace("/", "_"))
 
         ZipFile(apkPath).use { zipFile ->
             val entry = zipFile.getEntry(entryName) ?: error("Entry not found: $entryName")
             zipFile.getInputStream(entry).use { inputStream ->
-                if (entryName.endsWith(".xml", ignoreCase = true)) {
-                    FileOutputStream(targetFile).use { output ->
-                        val decoded = AxmlDecoder().decode(inputStream, output)
-                        if (!decoded) {
-                            throw IllegalStateException("Failed to decode XML: $entryName")
-                        }
-                    }
-                } else {
-                    FileOutputStream(targetFile).use { output ->
-                        inputStream.copyTo(output)
-                    }
-                }
+                FileOutputStream(targetFile).use { output -> inputStream.copyTo(output) }
             }
         }
         return targetFile

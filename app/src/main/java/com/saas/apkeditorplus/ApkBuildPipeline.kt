@@ -4,7 +4,7 @@ import android.content.Context
 import com.reandroid.apk.ApkModule
 import com.reandroid.archive.FileInputSource
 import com.saas.apkeditorplus.full.FullEditRepository
-import com.saas.apkeditorplus.utils.AxmlEncoder
+import com.saas.apkeditorplus.full.FullEditWorkspaceManager
 import java.io.File
 
 /**
@@ -34,16 +34,44 @@ object ApkBuildPipeline {
             check(outputApk.delete()) { "Could not replace ${outputApk.absolutePath}" }
         }
 
-        ApkModule.loadApkFile(sourceApk).use { module ->
+        val textualXmlChanges = changes.replacements.filter { (entryName, source) ->
+            isAxmlFile(entryName) && source.isFile && !isBinaryAxml(source)
+        }
+        val resourcePrerequisites = if (textualXmlChanges.isEmpty()) emptyMap() else {
+            changes.replacements.filter { (entryName, source) ->
+                source.isFile && (entryName == FullEditRepository.RESOURCES_ENTRY ||
+                    entryName == FullEditRepository.MANIFEST_ENTRY && isBinaryAxml(source))
+            }
+        }
+        val stagedBase = if (resourcePrerequisites.isNotEmpty()) {
+            onProgress("Preparing unified resource base…")
+            createResourceBase(context, sourceApk, resourcePrerequisites)
+        } else null
+        val assemblyBase = stagedBase ?: sourceApk
+
+        try {
+            ApkModule.loadApkFile(assemblyBase).use { module ->
             onProgress("Preparing APK entries…")
             module.setApkSignatureBlock(null)
             removeOldSignatures(module)
             applyDeletions(module, changes.deletions)
 
+            if (textualXmlChanges.isNotEmpty()) {
+                onProgress("Compiling XML resources…")
+                FullEditWorkspaceManager.applyTextXmlChanges(
+                    context = context,
+                    apkPath = assemblyBase.absolutePath,
+                    apkModule = module,
+                    changes = textualXmlChanges
+                )
+            }
+
             val compiledDexFiles = linkedMapOf<String, File>()
             changes.replacements.toSortedMap().forEach { (entryName, replacement) ->
                 require(isSafeArchiveEntry(entryName)) { "Invalid archive entry: $entryName" }
                 require(replacement.exists()) { "Modified file not found: $entryName" }
+
+                if (entryName in textualXmlChanges || entryName in resourcePrerequisites) return@forEach
 
                 val prepared = when {
                     FullEditRepository.isDexEntry(entryName) && replacement.isDirectory -> {
@@ -58,11 +86,6 @@ object ApkBuildPipeline {
                         }
                     }
 
-                    isAxmlFile(entryName) && replacement.isFile && !isBinaryAxml(replacement) -> {
-                        onProgress("Compiling $entryName…")
-                        encodeBinaryXml(context, entryName, replacement)
-                    }
-
                     else -> replacement
                 }
 
@@ -72,25 +95,56 @@ object ApkBuildPipeline {
                     return@forEach
                 }
 
-                val original = module.getInputSource(entryName)
-                val source = FileInputSource(prepared, entryName)
-                if (original != null) {
-                    source.copyAttributes(original)
-                }
-                if (entryName == FullEditRepository.RESOURCES_ENTRY) {
-                    source.setUncompressed(true)
-                }
-                module.removeInputSource(entryName)
-                module.add(source)
+                replaceEntry(module, entryName, prepared)
             }
 
             module.updateUncompressedFiles()
             module.getInputSource(FullEditRepository.RESOURCES_ENTRY)?.setUncompressed(true)
             onProgress("Writing aligned APK…")
             module.writeApk(outputApk)
+            }
+        } finally {
+            if (stagedBase != null) {
+                FullEditWorkspaceManager.discardWorkspace(context, stagedBase.absolutePath)
+            }
+            stagedBase?.parentFile?.deleteRecursively()
         }
 
         validateUnsignedApk(outputApk)
+    }
+
+    /**
+     * Materializes already-compiled Manifest/resources changes before decoding textual XML.
+     * This prevents a later XML compilation from silently reverting typed/string edits,
+     * including when a saved project is reopened in a new process.
+     */
+    private fun createResourceBase(
+        context: Context,
+        sourceApk: File,
+        prerequisites: Map<String, File>
+    ): File {
+        val directory = File(context.cacheDir, "resource_base/${System.nanoTime()}").apply { mkdirs() }
+        val stagedApk = File(directory, "base.apk")
+        ApkModule.loadApkFile(sourceApk).use { module ->
+            prerequisites.forEach { (entryName, replacement) ->
+                require(replacement.isFile) { "Modified resource not found: $entryName" }
+                replaceEntry(module, entryName, replacement)
+            }
+            module.updateUncompressedFiles()
+            module.getInputSource(FullEditRepository.RESOURCES_ENTRY)?.setUncompressed(true)
+            module.writeApk(stagedApk)
+        }
+        require(stagedApk.isFile && stagedApk.length() > 0L) { "Could not prepare resource compilation base" }
+        return stagedApk
+    }
+
+    private fun replaceEntry(module: ApkModule, entryName: String, replacement: File) {
+        val original = module.getInputSource(entryName)
+        val source = FileInputSource(replacement, entryName)
+        if (original != null) source.copyAttributes(original)
+        if (entryName == FullEditRepository.RESOURCES_ENTRY) source.setUncompressed(true)
+        module.removeInputSource(entryName)
+        module.add(source)
     }
 
     private fun removeOldSignatures(module: ApkModule) {
@@ -117,17 +171,6 @@ object ApkBuildPipeline {
                 }
             }
             .forEach(module::removeInputSource)
-    }
-
-    private fun encodeBinaryXml(context: Context, entryName: String, source: File): File {
-        val encoded = AxmlEncoder().encode(source.readText(), context)
-            ?: error("Failed to compile binary XML: $entryName")
-        require(encoded.isNotEmpty()) { "Empty binary XML generated: $entryName" }
-        val outputDir = File(context.cacheDir, "compiled_axml").apply { mkdirs() }
-        val output = File(outputDir, entryName.replace('/', '_'))
-        output.writeBytes(encoded)
-        require(isBinaryAxml(output)) { "Invalid binary XML generated: $entryName" }
-        return output
     }
 
     private fun validateUnsignedApk(apk: File) {

@@ -71,6 +71,22 @@ internal object FullEditWorkspaceManager {
         val key: String
     )
 
+    enum class TypedResourceKind(val tagName: String, val title: String) {
+        COLOR("color", "Cores"),
+        DIMEN("dimen", "Dimensões"),
+        BOOL("bool", "Booleanos"),
+        INTEGER("integer", "Inteiros"),
+        PLURALS("plurals", "Plurais"),
+        STRING_ARRAY("string-array", "Listas")
+    }
+
+    data class TypedResourceItem(
+        val kind: TypedResourceKind,
+        val name: String,
+        val value: String,
+        val sourceFile: String
+    )
+
     private data class StringValue(
         val name: String,
         val value: String
@@ -94,8 +110,57 @@ internal object FullEditWorkspaceManager {
         return locateWorkspace(rootDir, key)
     }
 
+    fun discardWorkspace(context: Context, apkPath: String) {
+        val apkFile = File(apkPath)
+        if (!apkFile.isFile) return
+        File(AppSettings.workspaceRoot(context, WORKSPACE_DIR), workspaceKey(apkFile)).deleteRecursively()
+    }
+
     fun getManifestFile(context: Context, apkPath: String): File {
         return getWorkspace(context, apkPath).manifestFile
+    }
+
+    fun getXmlFileForEditing(context: Context, apkPath: String, entryName: String): File {
+        require(entryName == AndroidManifestBlock.FILE_NAME ||
+            (entryName.startsWith("res/") && entryName.endsWith(".xml", ignoreCase = true))) {
+            "Unsupported XML entry: $entryName"
+        }
+        val workspace = getWorkspace(context, apkPath)
+        val file = if (entryName == AndroidManifestBlock.FILE_NAME) {
+            workspace.manifestFile
+        } else {
+            File(workspace.resDir, entryName.removePrefix("res/").replace('/', File.separatorChar))
+        }
+        require(file.isFile) { "Decoded XML not found: $entryName" }
+        return file
+    }
+
+    /** Applies every textual XML change through ARSCLib's resource-aware compiler. */
+    fun applyTextXmlChanges(
+        context: Context,
+        apkPath: String,
+        apkModule: ApkModule,
+        changes: Map<String, File>
+    ) {
+        if (changes.isEmpty()) return
+        val workspace = getWorkspace(context, apkPath)
+        changes.forEach { (entryName, source) ->
+            require(source.isFile) { "Modified XML not found: $entryName" }
+            val target = if (entryName == AndroidManifestBlock.FILE_NAME) {
+                workspace.manifestFile
+            } else {
+                require(entryName.startsWith("res/") && entryName.endsWith(".xml", true)) {
+                    "Unsupported XML entry: $entryName"
+                }
+                File(workspace.resDir, entryName.removePrefix("res/").replace('/', File.separatorChar))
+            }
+            target.parentFile?.mkdirs()
+            if (source.canonicalPath != target.canonicalPath) source.copyTo(target, overwrite = true)
+        }
+        ApkModuleXmlEncoder(apkModule, apkModule.tableBlock).buildResources(workspace.rootDir)
+        changes.keys.forEach { entryName ->
+            require(apkModule.getInputSource(entryName) != null) { "Failed to compile XML: $entryName" }
+        }
     }
 
     fun compileManifest(context: Context, apkPath: String): File {
@@ -264,7 +329,7 @@ internal object FullEditWorkspaceManager {
         return compileResources(context, apkPath, workspace)
     }
 
-    private fun compileResources(
+    fun compileResources(
         context: Context,
         apkPath: String,
         workspace: WorkspaceInfo
@@ -279,6 +344,55 @@ internal object FullEditWorkspaceManager {
             inputSource.write(outputFile)
             return outputFile
         }
+    }
+
+    fun readTypedResources(
+        context: Context,
+        apkPath: String,
+        kind: TypedResourceKind
+    ): List<TypedResourceItem> {
+        val valuesDir = valuesDirectoryForQualifier(getWorkspace(context, apkPath).resDir, "")
+        return valuesXmlFiles(valuesDir).flatMap { file ->
+            val document = runCatching { newDocumentBuilderFactory().newDocumentBuilder().parse(file) }
+                .getOrNull() ?: return@flatMap emptyList()
+            val nodes = document.getElementsByTagName(kind.tagName)
+            buildList {
+                for (index in 0 until nodes.length) {
+                    val element = nodes.item(index) as? org.w3c.dom.Element ?: continue
+                    val name = element.getAttribute("name").takeIf(String::isNotBlank) ?: continue
+                    add(TypedResourceItem(kind, name, typedElementValue(element, kind), file.name))
+                }
+            }
+        }.distinctBy { it.name }.sortedBy { it.name.lowercase(Locale.ROOT) }
+    }
+
+    fun saveTypedResource(
+        context: Context,
+        apkPath: String,
+        item: TypedResourceItem,
+        newValue: String
+    ): File {
+        validateTypedValue(item.kind, newValue)
+        val workspace = getWorkspace(context, apkPath)
+        val valuesDir = valuesDirectoryForQualifier(workspace.resDir, "")
+        val source = File(valuesDir, item.sourceFile)
+        require(source.isFile) { "Arquivo de recurso não encontrado: ${item.sourceFile}" }
+        val document = newDocumentBuilderFactory().newDocumentBuilder().parse(source)
+        val nodes = document.getElementsByTagName(item.kind.tagName)
+        var updated = false
+        for (index in 0 until nodes.length) {
+            val element = nodes.item(index) as? org.w3c.dom.Element ?: continue
+            if (element.getAttribute("name") != item.name) continue
+            writeTypedElementValue(document, element, item.kind, newValue)
+            updated = true
+            break
+        }
+        require(updated) { "Recurso não encontrado: ${item.name}" }
+        TransformerFactory.newInstance().newTransformer().apply {
+            setOutputProperty(OutputKeys.ENCODING, "UTF-8")
+            setOutputProperty(OutputKeys.INDENT, "yes")
+        }.transform(DOMSource(document), StreamResult(source))
+        return compileResources(context, apkPath, workspace)
     }
 
     private fun decodeWorkspace(apkFile: File, rootDir: File) {
@@ -340,6 +454,81 @@ internal object FullEditWorkspaceManager {
                 )
             )
             .orEmpty()
+    }
+
+    private fun valuesXmlFiles(valuesDir: File): List<File> = valuesDir.listFiles()
+        ?.filter { it.isFile && it.extension.equals("xml", true) }
+        ?.sortedBy { it.name.lowercase(Locale.ROOT) }
+        .orEmpty()
+
+    private fun typedElementValue(
+        element: org.w3c.dom.Element,
+        kind: TypedResourceKind
+    ): String = when (kind) {
+        TypedResourceKind.PLURALS -> childElements(element, "item").joinToString("\n") { child ->
+            "${child.getAttribute("quantity")}=${child.textContent.orEmpty()}"
+        }
+        TypedResourceKind.STRING_ARRAY -> childElements(element, "item").joinToString("\n") {
+            it.textContent.orEmpty()
+        }
+        else -> element.textContent.orEmpty().trim()
+    }
+
+    private fun childElements(parent: org.w3c.dom.Element, tagName: String): List<org.w3c.dom.Element> =
+        buildList {
+            val children = parent.childNodes
+            for (index in 0 until children.length) {
+                val child = children.item(index) as? org.w3c.dom.Element ?: continue
+                if (child.tagName == tagName) add(child)
+            }
+        }
+
+    private fun writeTypedElementValue(
+        document: org.w3c.dom.Document,
+        element: org.w3c.dom.Element,
+        kind: TypedResourceKind,
+        value: String
+    ) {
+        while (element.hasChildNodes()) element.removeChild(element.firstChild)
+        when (kind) {
+            TypedResourceKind.PLURALS -> value.lineSequence().filter(String::isNotBlank).forEach { line ->
+                val child = document.createElement("item")
+                child.setAttribute("quantity", line.substringBefore('=').trim())
+                child.appendChild(document.createTextNode(line.substringAfter('=', "").trim()))
+                element.appendChild(child)
+            }
+            TypedResourceKind.STRING_ARRAY -> value.lineSequence().forEach { line ->
+                val child = document.createElement("item")
+                child.appendChild(document.createTextNode(line))
+                element.appendChild(child)
+            }
+            else -> element.appendChild(document.createTextNode(value.trim()))
+        }
+    }
+
+    private fun validateTypedValue(kind: TypedResourceKind, raw: String) {
+        val value = raw.trim()
+        require(value.isNotEmpty()) { "O valor não pode ficar vazio" }
+        when (kind) {
+            TypedResourceKind.COLOR -> require(
+                value.matches(Regex("#[0-9a-fA-F]{3,8}")) || value.startsWith("@") || value.startsWith("?")
+            ) { "Use uma cor hexadecimal, @color/... ou ?attr/..." }
+            TypedResourceKind.DIMEN -> require(
+                value.matches(Regex("-?\\d+(?:\\.\\d+)?(?:dp|dip|sp|px|pt|in|mm)")) || value.startsWith("@")
+            ) { "Dimensão inválida. Exemplo: 16dp" }
+            TypedResourceKind.BOOL -> require(value == "true" || value == "false" || value.startsWith("@")) {
+                "Use true, false ou uma referência"
+            }
+            TypedResourceKind.INTEGER -> require(value.toIntOrNull() != null || value.startsWith("@")) {
+                "Inteiro inválido"
+            }
+            TypedResourceKind.PLURALS -> value.lineSequence().filter(String::isNotBlank).forEach { line ->
+                require('=' in line && line.substringBefore('=').trim() in setOf("zero", "one", "two", "few", "many", "other")) {
+                    "Use uma quantidade por linha, por exemplo: one=1 item"
+                }
+            }
+            TypedResourceKind.STRING_ARRAY -> Unit
+        }
     }
 
     private fun containsDisplayableStringResource(valuesDir: File): Boolean {

@@ -44,6 +44,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.saas.apkeditorplus.AppSettings
 import com.saas.apkeditorplus.FullEditActivity
+import com.saas.apkeditorplus.ImageEditorActivity
 import com.saas.apkeditorplus.R
 import com.saas.apkeditorplus.TextEditBigActivity
 import com.saas.apkeditorplus.ui.files.FileVisualKind
@@ -97,6 +98,8 @@ class FilesFragment : Fragment() {
         val smaliPath: String
     )
 
+    private data class ImageEditorTarget(val entryName: String, val file: File)
+
     private var currentArchivePath: String = ""
     private var currentSmaliWorkspace: FullEditRepository.SmaliWorkspace? = null
     private var currentSmaliPath: String = ""
@@ -109,6 +112,7 @@ class FilesFragment : Fragment() {
     private var pendingEditorTarget: EditorTarget? = null
     private var pendingReplacementTarget: ReplacementTarget? = null
     private var pendingAdditionTarget: AdditionTarget? = null
+    private var pendingImageEditorTarget: ImageEditorTarget? = null
 
     private val editorLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -138,6 +142,17 @@ class FilesFragment : Fragment() {
         pendingAdditionTarget = null
         if (uri != null) {
             addSelectedFile(target, uri)
+        }
+    }
+
+    private val imageEditorLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val target = pendingImageEditorTarget
+        pendingImageEditorTarget = null
+        if (result.resultCode == Activity.RESULT_OK && target != null) {
+            host().registerModifiedEntry(target.entryName, target.file)
+            loadFiles()
         }
     }
 
@@ -474,6 +489,8 @@ class FilesFragment : Fragment() {
 
             item.kind == ItemKind.XML || item.kind == ItemKind.TEXT -> openArchiveEditor(item)
 
+            classifyFile(item.displayName) == FileVisualKind.IMAGE -> openImageEditor(item)
+
             else -> Toast.makeText(
                 requireContext(),
                 getString(R.string.full_edit_unsupported_file),
@@ -666,6 +683,37 @@ class FilesFragment : Fragment() {
             host().registerModifiedEntry(target.modifiedEntryName, result)
             Toast.makeText(requireContext(), getString(R.string.file_replaced), Toast.LENGTH_SHORT).show()
             loadFiles()
+        }
+    }
+
+    private fun openImageEditor(item: BrowserItem) {
+        if (currentSmaliWorkspace != null) return
+        val context = requireContext().applicationContext
+        loading = true
+        viewLifecycleOwner.lifecycleScope.launch {
+            val file = runCatching {
+                withContext(Dispatchers.IO) {
+                    host().resolveModifiedEntry(item.entryName)?.takeIf(File::isFile) ?: run {
+                        val directory = File(context.cacheDir, "full_edit_images").apply { mkdirs() }
+                        val output = File(directory, "${item.entryName.hashCode().toUInt().toString(16)}_${item.displayName}")
+                        ZipFile(apkPath()).use { zip ->
+                            val entry = zip.getEntry(item.entryName) ?: error("Imagem não encontrada")
+                            zip.getInputStream(entry).use { input -> output.outputStream().use(input::copyTo) }
+                        }
+                        output
+                    }
+                }
+            }.getOrElse {
+                loading = false
+                Toast.makeText(requireContext(), it.message ?: getString(R.string.failed), Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            loading = false
+            pendingImageEditorTarget = ImageEditorTarget(item.entryName, file)
+            imageEditorLauncher.launch(Intent(requireContext(), ImageEditorActivity::class.java).apply {
+                putExtra(ImageEditorActivity.EXTRA_FILE_PATH, file.absolutePath)
+                putExtra(ImageEditorActivity.EXTRA_TITLE, item.displayName)
+            })
         }
     }
 

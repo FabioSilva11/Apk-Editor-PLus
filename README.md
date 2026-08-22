@@ -15,6 +15,7 @@ A tela de edição simples agora utiliza um `ViewPager2` real com três fragment
 - **Imagens**: lista somente recursos de imagem encontrados em `res/drawable*` e `res/mipmap*`, mostra a miniatura verdadeira e agrupa variantes de densidade que possuem o mesmo nome.
 - **Áudios**: localiza formatos de áudio comuns, permite reproduzir ou pausar, substituir e exportar cada arquivo.
 - O botão **Fechar** muda para **Salvar** quando existe alguma alteração e encaminha os arquivos modificados para a reconstrução do APK.
+- Ao substituir uma imagem agrupada, cada pasta de densidade recebe uma variante redimensionada para as dimensões originais; arquivos NinePatch são protegidos contra conversão incorreta.
 
 ### Miniaturas reais nos gerenciadores
 
@@ -52,15 +53,28 @@ A tela de edição simples agora utiliza um `ViewPager2` real com três fragment
 
 - Navegação pelos arquivos reais do APK e por workspaces Smali derivados de arquivos DEX.
 - Edição de Manifest, XML/AXML, textos e recursos de strings.
+- Novo fragment **Recursos** para editar cores, dimensões, booleanos, inteiros, plurais e listas tipadas, com validação antes de salvar.
+- Visualizador/editor interno de PNG, JPG e WebP com zoom, redimensionamento, transparência geral e remoção de fundo por tolerância de cor.
 - Substituição, exportação, adição e exclusão de arquivos.
 - Registro centralizado das modificações para reconstrução posterior.
-- Integração dos fragments de arquivos, strings, manifest e diferenças em uma interface Compose.
+- Integração dos fragments de strings, arquivos, recursos tipados, manifest e diferenças em uma interface Compose.
 
 ### Reconstrução e assinatura
 
-- Reconstrução do APK com os arquivos modificados.
+- Manifest, XML binário e `resources.arsc` passam por uma única base de compilação para que uma categoria de recurso não sobrescreva a outra.
+- A reconstrução roda em um serviço em primeiro plano: sair da tela não interrompe o trabalho, o andamento fica na notificação e pode ser cancelado.
+- O estado da reconstrução e o caminho do resultado ficam persistidos para a tela se reconectar ao serviço.
 - Assinatura com chave de teste ou KeyStore personalizado.
 - Gerenciamento de certificados, aliases e senhas de chave.
+
+### Patches e projetos salvos
+
+- O motor de patches aceita adição, remoção, busca/substituição literal ou regex, captura em variáveis, desvios condicionais, `GOTO`, regras vazias e mesclagem segura de arquivos.
+- Metadados de versão e pacote são validados; regras executáveis ou capazes de alterar assinatura são recusadas por segurança.
+- Ao final, o aplicativo apresenta um relatório das regras aplicadas.
+- Projetos salvos guardam a impressão SHA-256, tamanho e data do APK original.
+- APK ausente ou alterado bloqueia a abertura até que o mesmo original seja selecionado novamente; as edições armazenadas são preservadas.
+- A gravação do arquivo de estado é atômica para reduzir risco de corrupção se o processo for interrompido.
 
 ## Comparação aplicada com o APK original
 
@@ -125,10 +139,10 @@ $env:GRADLE_OPTS='-Xmx768m -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8'
 
 ## Estado atual
 
-- Build debug compilado com a configuração de baixa memória.
-- Testes unitários do histórico de diferenças e catálogo de idiomas disponíveis.
-- Interface conferida em aparelho Android físico.
-- Miniaturas de imagens locais e internas ao APK verificadas no aparelho.
+- Build debug e testes unitários concluídos com 1 GB de heap, um worker e sem daemon.
+- APK debug verificado com assinatura v2 válida.
+- Testes unitários abrangem o histórico de diferenças e o catálogo de idiomas disponíveis.
+- A versão anterior foi conferida em aparelho Android físico; as funções adicionadas nesta revisão ainda precisam da validação completa no aparelho.
 - O projeto ainda está em evolução e pode conter formatos de recursos ou APKs incompatíveis.
 
 ## Contribuindo

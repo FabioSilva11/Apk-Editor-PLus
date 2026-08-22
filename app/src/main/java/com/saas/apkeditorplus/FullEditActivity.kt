@@ -23,6 +23,7 @@ import com.saas.apkeditorplus.full.FilesFragment
 import com.saas.apkeditorplus.full.DiffFragment
 import com.saas.apkeditorplus.full.ManifestFragment
 import com.saas.apkeditorplus.full.StringFragment
+import com.saas.apkeditorplus.full.TypedResourcesFragment
 import com.saas.apkeditorplus.ui.full.FullEditScreen
 import com.saas.apkeditorplus.ui.theme.ApkEditorTheme
 import java.io.File
@@ -37,6 +38,7 @@ class FullEditActivity : BaseActivity() {
     private val modifiedFiles = linkedMapOf<String, String>()
     private val deletedEntries = linkedSetOf<String>()
     private var apkPath = ""
+    private var restoredProjectId: String? = null
     private var webServer: ApkWebServer? = null
     private var title by mutableStateOf("")
     private var packageLabel by mutableStateOf("")
@@ -70,6 +72,7 @@ class FullEditActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         apkPath = intent.getStringExtra("apkPath").orEmpty()
+        restoredProjectId = intent.getStringExtra("projectId")
         if (!File(apkPath).isFile) {
             Toast.makeText(this, getString(R.string.apk_path_not_found), Toast.LENGTH_LONG).show()
             finish()
@@ -177,8 +180,8 @@ class FullEditActivity : BaseActivity() {
         changesRevision++
         if (apkPath.isBlank()) return
         runCatching {
-            if (hasChanges) projectStore.save(apkPath, modifiedFiles, deletedEntries)
-            else projectStore.deleteForApk(apkPath)
+            if (hasChanges) projectStore.save(apkPath, modifiedFiles, deletedEntries, restoredProjectId)
+            else restoredProjectId?.let(projectStore::delete) ?: projectStore.deleteForApk(apkPath)
         }
     }
 
@@ -212,7 +215,11 @@ class FullEditActivity : BaseActivity() {
             result.onSuccess { applied ->
                 applied.replacements.forEach(::registerModifiedEntry)
                 applied.deletions.forEach(::registerDeletedEntry)
-                Toast.makeText(this@FullEditActivity, "${applied.appliedRules} regra(s) aplicadas", Toast.LENGTH_LONG).show()
+                AlertDialog.Builder(this@FullEditActivity)
+                    .setTitle("${applied.appliedRules} regra(s) aplicadas")
+                    .setMessage(applied.reports.joinToString("\n").ifBlank { "Patch aplicado sem alterações descritivas." })
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show()
             }.onFailure { error ->
                 AlertDialog.Builder(this@FullEditActivity).setTitle(R.string.patch)
                     .setMessage(error.message ?: getString(R.string.failed))
@@ -279,12 +286,13 @@ class FullEditActivity : BaseActivity() {
     private fun hasPendingChanges(): Boolean = modifiedFiles.isNotEmpty() || deletedEntries.isNotEmpty()
 
     private inner class FullEditPagerAdapter : FragmentStateAdapter(this@FullEditActivity) {
-        override fun getItemCount(): Int = 4
+        override fun getItemCount(): Int = 5
         override fun createFragment(position: Int): Fragment = when (position) {
             0 -> StringFragment.newInstance(apkPath)
             1 -> FilesFragment.newInstance(apkPath)
-            2 -> ManifestFragment.newInstance(apkPath)
-            3 -> DiffFragment.newInstance(apkPath)
+            2 -> TypedResourcesFragment.newInstance(apkPath)
+            3 -> ManifestFragment.newInstance(apkPath)
+            4 -> DiffFragment.newInstance(apkPath)
             else -> StringFragment.newInstance(apkPath)
         }
     }

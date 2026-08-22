@@ -111,6 +111,21 @@ fun ProjectListScreen(
                                             .format(Date(project.updatedAt)),
                                     style = MaterialTheme.typography.labelMedium
                                 )
+                                val sourceLabel = when (project.sourceStatus) {
+                                    ProjectStore.SourceStatus.VALID -> "APK original verificado"
+                                    ProjectStore.SourceStatus.MISSING -> "APK original não encontrado"
+                                    ProjectStore.SourceStatus.CHANGED -> "APK original foi alterado"
+                                    ProjectStore.SourceStatus.UNVERIFIED -> "APK original ainda não validado"
+                                }
+                                Text(
+                                    sourceLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (project.sourceStatus == ProjectStore.SourceStatus.VALID) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
+                                )
                             }
                             IconButton(onClick = { pendingDelete = project }) {
                                 Icon(painterResource(R.drawable.ic_close), "Excluir")
